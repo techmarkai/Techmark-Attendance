@@ -51,8 +51,14 @@ Rewritten to the final business model in `docs/specs/2026-11-18-architecture-pla
 - All camera access is read-only: four `GET` calls and two search `POST` calls. No `PUT`,
   `PATCH` or `DELETE` exists anywhere, and a test enforces it.
 
+### Fixed after review
+- **Fail-closed library reads.** `library_records()` previously reported a read as complete
+  when the camera sent no `totalMatches`. Since a complete read is treated as authoritative
+  and deactivates every employee missing from it, a firmware that omitted the total would
+  have deactivated real staff. Completeness is now proven or not claimed.
+
 ### Tests
-167 tests, Ruff clean under a declared `pyproject.toml` contract.
+180 tests, Ruff clean under a declared `pyproject.toml` contract.
 `tests/test_no_unsupported_claims.py` asserts over the source tree, so a forbidden claim
 cannot reappear in a column header or sensor name.
 

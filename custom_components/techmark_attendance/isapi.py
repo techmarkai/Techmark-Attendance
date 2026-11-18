@@ -137,9 +137,15 @@ class HikClient:
         `searchResultPosition` MUST start at 1: the camera answers HTTP 400
         when it is 0.
 
-        The second element is False when the camera reported more records than
-        were returned, so a truncated read is never mistaken for the whole
-        library.
+        Completeness must be *proven*, not assumed. It is True only when the
+        camera reported a `totalMatches` and we hold at least that many
+        records. A missing or unparsable total means we cannot tell, so the
+        read is reported incomplete.
+
+        This fails closed on purpose: a caller treats a complete read as
+        authoritative and deactivates every employee missing from it, so
+        guessing "complete" here would deactivate real staff the moment a
+        firmware stopped reporting the total.
         """
         out: list[dict[str, str]] = []
         total: int | None = None
@@ -178,7 +184,10 @@ class HikClient:
             position += len(page)
 
         records = out[:max_records]
-        complete = total is None or len(records) >= total
+        # Fail closed: no reported total means completeness is unprovable.
+        # The `len(records) >= total` test also covers the max_records cap,
+        # since a library larger than the cap cannot satisfy it.
+        complete = total is not None and len(records) >= total
         return records, complete
 
     # --- people counting ---
