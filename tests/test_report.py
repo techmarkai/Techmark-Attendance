@@ -1,4 +1,4 @@
-"""Excel report tests: formatting promises, and the coverage caveat."""
+"""Report tests: formatting promises, caveats, and injection protection."""
 
 from __future__ import annotations
 
@@ -7,36 +7,35 @@ from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
 
-from custom_components.techmark_attendance.models import DayRecord
+from custom_components.techmark_attendance.models import CountingBucket, PresenceDay
 from custom_components.techmark_attendance.report import (
     DURATION_FORMAT,
     ReportMeta,
-    write_daily_attendance,
-    write_daily_visitors,
-    write_monthly_attendance,
-    write_monthly_visitors,
+    csv_safe,
+    render_presence_csv,
+    sanitize_cell,
+    write_camera_statistics,
+    write_daily_presence,
+    write_monthly_presence,
 )
-from custom_components.techmark_attendance.stats import VisitorTotals
 
 TZ = ZoneInfo("Asia/Amman")
-GENERATED = datetime(2026, 11, 18, 18, 30, tzinfo=TZ)
+GENERATED = datetime(2026, 11, 18, 21, 0, tzinfo=TZ)
 
 
-def meta(title="Daily Attendance", period="2026-11-18"):
+def meta(title="Daily Presence", period="2026-11-18"):
     return ReportMeta(title, period, GENERATED)
 
 
 def record(
     day="2026-11-18",
-    human_id="emp1",
+    key="emp1",
     name="Yousef",
-    status="present",
+    status="recognised",
     first="09:00",
     last="18:00",
     span=540,
-    late=0,
-    early=0,
-    overtime=0,
+    recognitions=4,
     flags=(),
 ):
     def dt(hhmm):
@@ -46,281 +45,170 @@ def record(
         y, mo, d = (int(x) for x in day.split("-"))
         return datetime(y, mo, d, h, m, tzinfo=TZ)
 
-    return DayRecord(
-        date=day,
-        human_id=human_id,
-        name=name,
+    return PresenceDay(
+        day=day,
+        employee_key=key,
+        display_name=name,
         status=status,
-        first_in=dt(first),
-        last_out=dt(last),
-        span_minutes=span,
-        scheduled_minutes=480,
-        late_minutes=late,
-        early_minutes=early,
-        overtime_minutes=overtime,
+        first_seen=dt(first),
+        last_seen=dt(last),
+        recognitions=recognitions,
+        presence_span_minutes=span,
         flags=flags,
     )
 
 
-def totals(enter=90, exit_=83, dedup=76, male=12, female=2):
-    return VisitorTotals(
-        enter=enter,
-        exit=exit_,
-        duplicate_people=dedup,
-        gender={"male": male, "female": female},
-        age={"middle": 7, "prime": 6, "middleAged": 1},
-        mask={"no": 13, "yes": 1},
-    )
-
-
-# --- attendance ---
-
-
-def test_daily_attendance_writes_a_readable_sheet(tmp_path):
-    path = write_daily_attendance(
-        tmp_path / "a.xlsx", [record()], {"emp1": "E-001"}, meta(), False
-    )
-    ws = load_workbook(path).active
-    text = "\n".join(
+def text_of(ws) -> str:
+    return " ".join(
         str(c.value) for row in ws.iter_rows() for c in row if c.value is not None
     )
-    assert "Yousef" in text
-    assert "E-001" in text
-    assert "present" in text
 
 
-def test_span_column_uses_an_elapsed_format_so_long_totals_survive(tmp_path):
-    """Without [h]:mm a 30-hour total renders as 06:00, silently losing a day."""
-    path = write_daily_attendance(tmp_path / "a.xlsx", [record(span=1860)], {}, meta(), False)
-    ws = load_workbook(path).active
-    header_row = next(
-        r for r in ws.iter_rows() if any(c.value == "Span on site" for c in r)
+# --- the caveats must survive into the file ----------------------------
+
+
+def test_presence_report_states_the_span_is_not_hours_worked(tmp_path):
+    path = write_daily_presence(tmp_path / "p.xlsx", [record()], {}, meta())
+    body = text_of(load_workbook(path).active)
+    assert "NOT a verified working duration" in body
+    assert "not hours worked" in body
+
+
+def test_presence_report_has_no_attendance_verdict_columns(tmp_path):
+    """The columns that would imply a verdict must not exist."""
+    path = write_daily_presence(tmp_path / "p.xlsx", [record()], {}, meta())
+    headers = [
+        str(c.value).lower()
+        for row in load_workbook(path).active.iter_rows()
+        for c in row
+        if c.value is not None
+    ]
+    for forbidden in ("late", "overtime", "absent", "scheduled"):
+        assert not any(forbidden in h for h in headers), f"{forbidden} must not appear"
+
+
+def test_presence_report_uses_neutral_column_names(tmp_path):
+    path = write_daily_presence(tmp_path / "p.xlsx", [record()], {}, meta())
+    body = text_of(load_workbook(path).active)
+    assert "First seen" in body and "Last seen" in body
+    assert "First in" not in body and "Last out" not in body
+
+
+def test_camera_report_states_employees_are_included(tmp_path):
+    bucket = CountingBucket(
+        "hour", "2026-11-18T16:00:00", 41, 42, 37, 4, "valid", {"gender": {"male": 4}}
     )
-    col = next(c.column for c in header_row if c.value == "Span on site")
+    path = write_camera_statistics(
+        tmp_path / "c.xlsx", [bucket], {"enter": 41, "validity": "valid"}, meta("Camera")
+    )
+    body = text_of(load_workbook(path).active)
+    assert "employees included" in body.lower()
+    assert "customer" not in body.lower(), "no customer claim may appear"
+
+
+# --- formatting --------------------------------------------------------
+
+
+def test_span_uses_an_elapsed_format_so_long_totals_survive(tmp_path):
+    """31 hours must not render as 07:00."""
+    path = write_daily_presence(tmp_path / "p.xlsx", [record(span=1860)], {}, meta())
+    ws = load_workbook(path).active
+    header_row = next(r for r in ws.iter_rows() if any(c.value == "Presence span" for c in r))
+    col = next(c.column for c in header_row if c.value == "Presence span")
     cell = ws.cell(row=header_row[0].row + 1, column=col)
     assert cell.number_format == DURATION_FORMAT
-    # 1860 minutes is 31 hours. Excel must keep the full elapsed time rather
-    # than wrapping it to 7:00 as a plain time format would.
     assert cell.value == timedelta(minutes=1860)
     assert cell.value.total_seconds() / 3600 == 31
 
 
-def test_overtime_column_is_absent_when_overtime_is_off(tmp_path):
-    off = load_workbook(
-        write_daily_attendance(tmp_path / "off.xlsx", [record()], {}, meta(), False)
-    ).active
-    headers_off = [c.value for row in off.iter_rows() for c in row]
-    assert "Overtime" not in headers_off
-
-    on = load_workbook(
-        write_daily_attendance(tmp_path / "on.xlsx", [record()], {}, meta(), True)
-    ).active
-    headers_on = [c.value for row in on.iter_rows() for c in row]
-    assert "Overtime" in headers_on
-
-
 def test_sheets_are_protected_without_a_password(tmp_path):
-    """Protection must not stop anyone opening or printing the report."""
-    path = write_daily_attendance(tmp_path / "a.xlsx", [record()], {}, meta(), False)
+    path = write_daily_presence(tmp_path / "p.xlsx", [record()], {}, meta())
     ws = load_workbook(path).active
     assert ws.protection.sheet is True
     assert not ws.protection.password
 
 
-def test_span_caveat_appears_in_every_attendance_report(tmp_path):
-    path = write_daily_attendance(tmp_path / "a.xlsx", [record()], {}, meta(), False)
-    ws = load_workbook(path).active
-    text = " ".join(
-        str(c.value) for row in ws.iter_rows() for c in row if c.value is not None
-    )
-    assert "NOT hours worked" in text
-
-
-def test_monthly_workbook_has_an_overview_a_sheet_per_employee_and_a_detail(tmp_path):
+def test_monthly_workbook_structure(tmp_path):
     records = [
-        record(day="2026-11-18", human_id="emp1", name="Yousef"),
-        record(day="2026-11-19", human_id="emp1", name="Yousef", status="late", late=20),
-        record(day="2026-11-18", human_id="emp2", name="Esraa"),
+        record(day="2026-11-18", key="emp1", name="Yousef"),
+        record(day="2026-11-19", key="emp1", name="Yousef", status="no_recognition",
+               first=None, last=None, span=None, recognitions=0),
+        record(day="2026-11-18", key="emp2", name="Esraa"),
     ]
-    path = write_monthly_attendance(
-        tmp_path / "m.xlsx",
-        records,
-        {"emp1": {"employee_id": "E-001"}, "emp2": {"employee_id": "E-002"}},
-        meta("Monthly Attendance", "2026-11"),
-        False,
+    path = write_monthly_presence(
+        tmp_path / "m.xlsx", records, {"emp1": {"employee_id": "E-1"}}, meta("Monthly", "2026-11")
     )
     wb = load_workbook(path)
     assert "Monthly Overview" in wb.sheetnames
     assert "Detailed Daily" in wb.sheetnames
-    assert "Yousef" in wb.sheetnames
-    assert "Esraa" in wb.sheetnames
+    assert "Yousef" in wb.sheetnames and "Esraa" in wb.sheetnames
 
 
-def test_employee_sheet_name_is_sanitised_and_truncated(tmp_path):
-    long_name = "A" * 40 + "/bad:name"
-    path = write_monthly_attendance(
-        tmp_path / "m.xlsx",
-        [record(human_id="e", name=long_name)],
-        {},
-        meta("Monthly Attendance", "2026-11"),
-        False,
+def test_monthly_overview_counts_recognition_not_attendance(tmp_path):
+    records = [
+        record(status="recognised"),
+        record(day="2026-11-19", status="no_recognition", first=None, last=None, span=None),
+        record(day="2026-11-20", status="no_camera_data", first=None, last=None, span=None),
+    ]
+    path = write_monthly_presence(tmp_path / "m.xlsx", records, {}, meta("Monthly", "2026-11"))
+    ws = load_workbook(path)["Monthly Overview"]
+    body = text_of(ws)
+    assert "Days with no recognition" in body
+    assert "Days with no camera data" in body
+    assert "attendance percentage" not in body.lower()
+    assert "at least one recognition" in body
+
+
+def test_employee_sheet_name_sanitised_and_truncated(tmp_path):
+    path = write_monthly_presence(
+        tmp_path / "m.xlsx", [record(name="A" * 40 + "/bad:name")], {}, meta("Monthly")
     )
     wb = load_workbook(path)
-    sheet = [s for s in wb.sheetnames if s not in ("Monthly Overview", "Detailed Daily")][0]
+    sheet = next(
+        s for s in wb.sheetnames if s not in ("Monthly Overview", "Detailed Daily")
+    )
     assert len(sheet) <= 31
     assert not set(sheet) & set(':\\/?*[]')
 
 
-def test_absent_days_are_counted_in_the_overview(tmp_path):
-    records = [
-        record(status="present"),
-        record(day="2026-11-19", status="absent", first=None, last=None, span=None),
-        record(day="2026-11-20", status="no_camera_data", first=None, last=None, span=None),
-    ]
-    path = write_monthly_attendance(
-        tmp_path / "m.xlsx", records, {}, meta("Monthly Attendance", "2026-11"), False
-    )
-    ws = load_workbook(path)["Monthly Overview"]
-    values = {}
-    for row in ws.iter_rows():
-        cells = [c.value for c in row]
-        if cells and isinstance(cells[0], str) and len(cells) > 1:
-            values[cells[0]] = cells[1]
-    assert values.get("Confirmed absences") == 1
-    assert values.get("Days without camera data") == 1
-
-
-def test_attendance_percentage_says_so_when_nothing_was_scheduled(tmp_path):
-    rec = DayRecord(
-        date="2026-11-20", human_id="e", name="Yousef", status="weekend", scheduled_minutes=0
-    )
-    path = write_monthly_attendance(
-        tmp_path / "m.xlsx", [rec], {}, meta("Monthly Attendance", "2026-11"), False
-    )
-    ws = load_workbook(path)["Monthly Overview"]
-    text = " ".join(
-        str(c.value) for row in ws.iter_rows() for c in row if c.value is not None
-    )
-    assert "no scheduled days" in text
-
-
-# --- visitors ---
-
-
-def test_daily_visitor_report_shows_coverage_not_a_bare_split(tmp_path):
-    buckets = [
-        {"hour": 16, "enter": 41, "exit": 42, "dedup": 37,
-         "gender": {"male": 4}, "age": {"middle": 4}, "mask": {"no": 4}},
-        {"hour": 17, "enter": 42, "exit": 34, "dedup": 33,
-         "gender": {"male": 7, "female": 2}, "age": {"prime": 6, "middleAged": 1}, "mask": {"no": 8, "yes": 1}},
-    ]
-    path = write_daily_visitors(
-        tmp_path / "v.xlsx", buckets, totals(), meta("Daily Visitors"), 25
+def test_invalid_bucket_renders_blank_not_zero(tmp_path):
+    """An invalid derived figure must not look like a real zero."""
+    bucket = CountingBucket("hour", "2026-11-18T22:00:00", 5, 5, 9, None, "invalid", {})
+    path = write_camera_statistics(
+        tmp_path / "c.xlsx", [bucket], {"validity": "invalid"}, meta("Camera")
     )
     ws = load_workbook(path).active
-    text = " ".join(
-        str(c.value) for row in ws.iter_rows() for c in row if c.value is not None
+    header_row = next(r for r in ws.iter_rows() if any(c.value == "Unique people" for c in r))
+    col = next(c.column for c in header_row if c.value == "Unique people")
+    assert ws.cell(row=header_row[0].row + 1, column=col).value is None
+    assert "invalid" in text_of(ws)
+
+
+def test_camera_report_has_a_demographics_sheet(tmp_path):
+    bucket = CountingBucket(
+        "hour", "2026-11-18T16:00:00", 41, 42, 37, 4, "valid",
+        {"gender": {"male": 4}, "age": {"middleAged": 4}},
     )
-    assert "14 of 90 entries classified (15.6%)" in text
-    assert "LOW COVERAGE" in text  # 15.6% is below the 25% floor
-    assert "never a random sample" in text or "not a random" in text
-
-
-def test_dedup_column_is_labelled_raw_and_never_called_unique(tmp_path):
-    """The camera counter must not be presented as a unique-visitor figure."""
-    path = write_daily_visitors(
-        tmp_path / "v.xlsx",
-        [{"hour": 9, "enter": 10, "exit": 9, "dedup": 8, "gender": {}, "age": {}, "mask": {}}],
-        totals(),
-        meta("Daily Visitors"),
-        25,
-    )
-    ws = load_workbook(path).active
-    headers = [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None]
-    assert any("duplicatePeople (raw)" in h for h in headers)
-    assert not any("unique" in h.lower() for h in headers)
-
-
-def test_high_coverage_is_not_flagged_low(tmp_path):
-    path = write_daily_visitors(
-        tmp_path / "v.xlsx",
-        [{"hour": 9, "enter": 20, "exit": 20, "dedup": 20,
-          "gender": {"male": 10, "female": 8}, "age": {}, "mask": {}}],
-        totals(enter=20, male=10, female=8),
-        meta("Daily Visitors"),
-        25,
-    )
-    ws = load_workbook(path).active
-    text = " ".join(
-        str(c.value) for row in ws.iter_rows() for c in row if c.value is not None
-    )
-    assert "LOW COVERAGE" not in text
-
-
-def test_monthly_visitors_lists_each_day_then_the_total(tmp_path):
-    per_day = {
-        "2026-11-17": totals(enter=50, exit_=48, dedup=44, male=5, female=1),
-        "2026-11-18": totals(enter=90, exit_=83, dedup=76, male=12, female=2),
+    totals = {
+        "enter": 41, "validity": "valid", "classified": 4,
+        "demographics": {"gender": {"male": 4}, "age": {"middleAged": 4}},
     }
-    combined = totals(enter=140, exit_=131, dedup=120, male=17, female=3)
-    path = write_monthly_visitors(
-        tmp_path / "mv.xlsx",
-        per_day,
-        combined,
-        meta("Monthly Visitors", "2026-11"),
-        25,
-        [{"date": "2026-11-18", "hour": 16, "enter": 41, "exit": 42, "dedup": 37}],
-    )
-    wb = load_workbook(path)
-    assert wb.sheetnames == ["Monthly Overview", "Demographics", "Hourly Detail"]
-    ws = wb["Monthly Overview"]
-    column_a = [str(c.value) for c in ws["A"] if c.value is not None]
-    assert "2026-11-17" in column_a
-    assert "2026-11-18" in column_a
-    assert "MONTH TOTAL" in column_a
-
-
-def test_demographics_sheet_states_shares_are_of_classified_only(tmp_path):
-    path = write_monthly_visitors(
-        tmp_path / "mv.xlsx",
-        {"2026-11-18": totals()},
-        totals(),
-        meta("Monthly Visitors", "2026-11"),
-        25,
-    )
+    path = write_camera_statistics(tmp_path / "c.xlsx", [bucket], totals, meta("Camera"))
     ws = load_workbook(path)["Demographics"]
-    text = " ".join(
-        str(c.value) for row in ws.iter_rows() for c in row if c.value is not None
-    )
-    assert "never of total footfall" in text
-    assert "Middle aged" in text  # raw middleAged mapped to a readable label
+    body = text_of(ws)
+    assert "Middle aged" in body  # raw value mapped only for display
+    assert "cannot be separated out" in body
 
 
-def test_demographics_sheet_handles_a_day_with_no_classified_visitors(tmp_path):
-    empty = VisitorTotals(enter=30, exit=29, duplicate_people=28)
-    path = write_monthly_visitors(
-        tmp_path / "mv.xlsx", {"2026-11-18": empty}, empty, meta("Monthly Visitors"), 25
-    )
-    ws = load_workbook(path)["Demographics"]
-    text = " ".join(
-        str(c.value) for row in ws.iter_rows() for c in row if c.value is not None
-    )
-    assert "no classified visitors" in text
-
-
-def test_report_with_no_rows_at_all_still_opens(tmp_path):
-    path = write_daily_attendance(tmp_path / "e.xlsx", [], {}, meta(), False)
+def test_report_with_no_rows_still_opens(tmp_path):
+    path = write_daily_presence(tmp_path / "e.xlsx", [], {}, meta())
     assert load_workbook(path).active is not None
 
 
-# --- formula injection ---
+# --- formula injection -------------------------------------------------
 
 
 def test_formula_prefixes_are_escaped():
-    """Names come from the camera's face library, which anyone with camera
-    access can write. A formula must not execute when HR opens the report."""
-    from custom_components.techmark_attendance.report import sanitize_cell
-
     for hostile in (
         '=HYPERLINK("http://evil/","Payslip")',
         "+1+1",
@@ -328,55 +216,66 @@ def test_formula_prefixes_are_escaped():
         "@SUM(A1:A9)",
         "\tTabbed",
         "\rCarriage",
+        "\nNewline",
+        "\u000b=1+1",  # leading control character, then a formula
     ):
-        assert sanitize_cell(hostile).startswith("'")
+        assert str(sanitize_cell(hostile)).startswith("'")
 
 
-def test_ordinary_values_are_left_alone():
-    from custom_components.techmark_attendance.report import sanitize_cell
-
-    for benign in ("Yousef", "E-001", "present", "09:00", ""):
+def test_ordinary_values_are_untouched():
+    for benign in ("Yousef", "E-001", "recognised", "09:00", ""):
         assert sanitize_cell(benign) == benign
-    # Numbers and durations must not be turned into text.
     assert sanitize_cell(42) == 42
     assert sanitize_cell(1.5) == 1.5
     assert sanitize_cell(None) is None
     assert sanitize_cell(timedelta(minutes=90)) == timedelta(minutes=90)
 
 
-def test_hostile_employee_name_reaches_the_sheet_as_text(tmp_path):
-    hostile = '=cmd|\' /C calc\'!A0'
-    path = write_daily_attendance(
-        tmp_path / "x.xlsx", [record(name=hostile)], {}, meta(), False
-    )
-    ws = load_workbook(path).active
-    written = [
-        c.value for row in ws.iter_rows() for c in row
-        if isinstance(c.value, str) and "cmd" in c.value
-    ]
-    assert written, "the name should still appear in the report"
-    for value in written:
-        assert value.startswith("'")
-    # openpyxl must not have stored it as a formula cell.
-    formulas = [
-        c.value for row in ws.iter_rows() for c in row
-        if isinstance(c.value, str) and c.value.startswith("=")
-    ]
-    assert not formulas
-
-
-def test_hostile_name_in_an_employee_sheet_is_escaped(tmp_path):
-    hostile = "=1+1"
-    path = write_monthly_attendance(
+def test_hostile_name_survives_as_text_in_every_sheet(tmp_path):
+    hostile = "=cmd|' /C calc'!A0"
+    path = write_monthly_presence(
         tmp_path / "m.xlsx",
         [record(name=hostile)],
         {"emp1": {"employee_id": "=2+2"}},
-        meta("Monthly Attendance", "2026-11"),
-        False,
+        meta("Monthly"),
     )
     wb = load_workbook(path)
     for ws in wb:
         for row in ws.iter_rows():
             for cell in row:
                 if isinstance(cell.value, str):
+                    assert not cell.value.startswith("="), f"formula left in {ws.title}"
+
+
+def test_camera_sheet_escapes_hostile_demographic_values(tmp_path):
+    """Raw camera values reach the sheet, so they are escaped too."""
+    bucket = CountingBucket(
+        "hour", "2026-11-18T16:00:00", 1, 1, 0, 1, "valid", {"gender": {"=evil()": 1}}
+    )
+    totals = {"enter": 1, "validity": "valid", "demographics": {"gender": {"=evil()": 1}}}
+    path = write_camera_statistics(tmp_path / "c.xlsx", [bucket], totals, meta("Camera"))
+    for ws in load_workbook(path):
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
                     assert not cell.value.startswith("=")
+
+
+def test_csv_export_is_escaped_too():
+    out = render_presence_csv([record(name="=1+1")], {})
+    assert "'=1+1" in out
+    assert csv_safe("@x").startswith("'")
+
+
+def test_configured_schedule_is_shown_as_reference_only(tmp_path):
+    """The schedule appears for context, flagged as driving no calculation."""
+    m = ReportMeta("Daily Presence", "2026-11-18", GENERATED, schedule="09:00-19:00")
+    path = write_daily_presence(tmp_path / "p.xlsx", [record()], {}, m)
+    body = text_of(load_workbook(path).active)
+    assert "Configured schedule: 09:00-19:00" in body
+    assert "no figure below is calculated from it" in body
+
+
+def test_no_schedule_line_when_none_is_configured(tmp_path):
+    path = write_daily_presence(tmp_path / "p.xlsx", [record()], {}, meta())
+    assert "Configured schedule" not in text_of(load_workbook(path).active)

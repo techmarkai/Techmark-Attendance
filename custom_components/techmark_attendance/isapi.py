@@ -13,7 +13,6 @@ import httpx
 
 from .const import (
     ALERT_STREAM_PATH,
-    COUNTING_CONFIG_PATH,
     COUNTING_SEARCH_PATH,
     COUNTING_STATISTIC_TYPE,
     DEVICE_INFO_PATH,
@@ -130,13 +129,20 @@ class HikClient:
             )
         return libs
 
-    async def library_records(self, fdid: str, max_records: int = 3000) -> list[dict[str, str]]:
-        """Every record in a library.
+    async def library_records(
+        self, fdid: str, max_records: int = 3000
+    ) -> tuple[list[dict[str, str]], bool]:
+        """Every record in one library, plus whether the read was complete.
 
         `searchResultPosition` MUST start at 1: the camera answers HTTP 400
         when it is 0.
+
+        The second element is False when the camera reported more records than
+        were returned, so a truncated read is never mistaken for the whole
+        library.
         """
         out: list[dict[str, str]] = []
+        total: int | None = None
         position = FDSEARCH_FIRST_POSITION
         page_size = 100
         while len(out) < max_records:
@@ -150,6 +156,9 @@ class HikClient:
                 "</FDSearchDescription>"
             ).encode()
             root = await self._xml("POST", FDSEARCH_PATH, body)
+            if total is None:
+                reported = _text(root, "totalMatches")
+                total = int(reported) if reported and reported.isdigit() else None
             page = [
                 {
                     "pid": _text(node, "PID") or "",
@@ -167,16 +176,12 @@ class HikClient:
             if len(page) < page_size:
                 break
             position += len(page)
-        return out[:max_records]
+
+        records = out[:max_records]
+        complete = total is None or len(records) >= total
+        return records, complete
 
     # --- people counting ---
-
-    async def counting_config(self) -> dict[str, str]:
-        root = await self._xml("GET", COUNTING_CONFIG_PATH)
-        return {
-            key: _text(root, key) or ""
-            for key in ("enabled", "dailyResetTime", "countingSceneMode", "dataUploadCycle")
-        }
 
     async def counting_statistics(self, day: Date) -> list[dict[str, Any]]:
         """Hourly buckets for one day, with demographics.

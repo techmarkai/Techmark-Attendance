@@ -1,0 +1,47 @@
+[project]
+name = "techmark-attendance"
+version = "0.2.0"
+description = "Home Assistant integration for camera-side employee recognition and people counting"
+requires-python = ">=3.13"
+
+[tool.ruff]
+# Declared so lint is a contract rather than a matter of taste, and so a
+# future contributor gets the same verdict. The code sits near 100; 120 is the
+# common Python convention and leaves room for a long bound-SQL fragment.
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "W",    # warnings
+    "F",    # pyflakes
+    "I",    # import order
+    "B",    # bugbear
+    "SIM",  # simplify
+    "UP",   # pyupgrade
+    "RUF",  # ruff-specific
+    "S",    # bandit: security
+    "BLE",  # blind except
+    "SLF",  # private member access
+]
+ignore = [
+    # The decoder and store deliberately catch broadly: a malformed camera
+    # payload must never kill the event stream. Each site carries its own
+    # noqa with a reason.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert over the source tree on purpose, and long literal payloads
+# captured from the camera are clearer unwrapped.
+# Asserts are what a test is; private access is how the store's internals
+# are exercised; source-text assertions need the long paths.
+"tests/*" = ["E501", "SIM117", "S101", "SLF001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The core modules carry no Home Assistant imports, so the suite runs with
+# only openpyxl and pytest installed. Home Assistant runtime tests are a
+# separate, still-outstanding task (see docs/specs, Phase 6).
+addopts = "-q"

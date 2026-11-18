@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect the camera",
-        "description": "The camera performs all face comparison and people counting. Home Assistant only receives the events.",
+        "description": "The camera performs all face comparison and people counting. Home Assistant only reads. No camera setting is ever changed.",
         "data": {
           "host": "Host or IP address",
           "username": "Username",
@@ -12,122 +12,90 @@
       },
       "reauth_confirm": {
         "title": "Re-enter the camera credentials",
-        "data": {
-          "username": "Username",
-          "password": "Password"
-        }
+        "data": { "username": "Username", "password": "Password" }
       }
     },
     "error": {
       "cannot_connect": "Could not reach the camera.",
       "invalid_auth": "The camera rejected those credentials."
     },
-    "abort": {
-      "already_configured": "This camera is already set up."
-    }
+    "abort": { "already_configured": "This camera is already set up." }
   },
   "options": {
     "step": {
       "init": {
         "title": "Techmark Attendance",
-        "description": "All HR policy is configured here. No file editing is needed.",
+        "description": "Calendar settings take effect immediately. Time-of-day policy is saved but not applied — see that section for why.",
         "menu_options": {
-          "schedule": "Working schedule",
-          "day_override": "Hours for one weekday",
-          "rules": "Attendance rules",
-          "holidays": "Holidays and leave categories",
+          "calendar": "Working days, holidays and leave categories",
           "employees": "Employees",
-          "reports": "Reports and visitor options",
+          "reports": "Reports and retention",
+          "inactive_policy": "Time-of-day policy (saved, not applied)",
           "save": "Save and close"
         }
       },
-      "schedule": {
-        "title": "Working schedule",
-        "description": "The default for every working day. Use “Hours for one weekday” to vary a single day.",
+      "calendar": {
+        "title": "Working days, holidays and leave",
+        "description": "Default working week is Saturday to Thursday, with Friday off — change it freely. Holidays: one ISO date (YYYY-MM-DD) per line. Leaving working days empty keeps the default.",
         "data": {
           "working_days": "Working days",
-          "start_time": "Official start (HH:MM)",
-          "end_time": "Official end (HH:MM)",
-          "required_hours": "Required hours per day",
-          "break_minutes": "Break minutes",
-          "break_paid": "Break is paid",
-          "overnight_shift": "Shift crosses midnight"
-        }
-      },
-      "day_override": {
-        "title": "Which weekday?",
-        "data": { "weekday": "Weekday" }
-      },
-      "day_edit": {
-        "title": "Hours for {weekday}",
-        "data": {
-          "working": "This is a working day",
-          "start_time": "Start (HH:MM)",
-          "end_time": "End (HH:MM)",
-          "required_hours": "Required hours",
-          "clear": "Remove this override and use the default"
-        }
-      },
-      "rules": {
-        "title": "Attendance rules",
-        "description": "Face coverage is sparse, so a short grace period will produce occasional false lates.",
-        "data": {
-          "grace_minutes": "Late arrival grace",
-          "early_tolerance_minutes": "Early departure tolerance (minutes)",
-          "min_daily_hours": "Minimum daily hours",
-          "overtime_enabled": "Calculate overtime",
-          "overtime_threshold_minutes": "Overtime threshold (minutes beyond required)",
-          "min_face_quality": "Minimum face quality for unmatched faces"
-        }
-      },
-      "holidays": {
-        "title": "Holidays and leave",
-        "description": "One ISO date (YYYY-MM-DD) per line. Leave categories, one per line.",
-        "data": {
           "public_holidays": "Public holidays",
           "company_holidays": "Company holidays",
-          "leave_categories": "Leave categories"
+          "leave_categories": "Leave categories (one per line)"
         }
       },
       "employees": {
         "title": "Choose an employee",
-        "description": "The roster comes from the camera's Employee face library.",
+        "description": "The roster is built from employees the camera has recognised.",
         "data": { "employee": "Employee" }
       },
       "employee_edit": {
         "title": "{employee}",
-        "description": "Approved leave: one entry per line, as “2026-12-01..2026-12-05 annual” or “2026-12-01 sick”.",
+        "description": "Approved leave: one entry per line, as “2026-12-01..2026-12-05 annual” or “2026-12-01 sick”. Leave working days empty to use the company list.",
         "data": {
           "name": "Display name",
           "employee_id": "Employee ID",
           "active": "Active",
-          "use_custom_hours": "This employee has different hours",
-          "start_time": "Start (HH:MM)",
-          "end_time": "End (HH:MM)",
-          "required_hours": "Required hours",
+          "working_days": "Working days for this employee",
           "leave": "Approved leave"
         }
       },
       "reports": {
-        "title": "Reports and visitor options",
+        "title": "Reports and retention",
+        "description": "Raw camera events are purged after the retention period. Presence history, employees and policy snapshots are permanent and are never purged.",
         "data": {
           "report_dir": "Report folder name (inside the config directory)",
           "month_start_day": "Reporting month starts on day",
           "date_format": "Date format",
           "time_format": "Time format",
-          "coverage_floor_pct": "Flag demographics below this coverage %",
-          "unique_visitors_enabled": "Expose the camera's duplicatePeople counter (meaning unverified)",
-          "retention_days": "Keep raw events for (days)"
+          "retention_days": "Keep raw events for (days)",
+          "min_face_quality": "Minimum face quality for anonymous detections"
+        }
+      },
+      "inactive_policy": {
+        "title": "Time-of-day policy — saved but not applied",
+        "description": "These values are stored and editable, but nothing is calculated from them. The camera reports no entry or exit direction on a face comparison, so a recognition timestamp cannot be treated as an arrival or a departure. Deriving late arrival, early departure, overtime, required-hours compliance or absence from it would be fabrication. They become active only if a verified direction source is added. The schedule below is shown as context on reports; change it freely.",
+        "data": {
+          "start_time": "Official start (HH:MM)",
+          "end_time": "Official end (HH:MM)",
+          "schedule_confirmed": "I have confirmed this schedule is correct",
+          "required_hours": "Required hours per day",
+          "grace_minutes": "Late arrival grace",
+          "early_tolerance_minutes": "Early departure tolerance (minutes)",
+          "min_daily_hours": "Minimum daily hours",
+          "overnight_shift": "Shift crosses midnight",
+          "overtime_enabled": "Calculate overtime (when a verified source exists)",
+          "overtime_threshold_minutes": "Overtime threshold (minutes beyond required)"
         }
       }
     },
     "error": {
-      "bad_time": "Times must be HH:MM in 24-hour form.",
+      "bad_time": "Times must be HH:MM in 24-hour form, or left blank.",
       "bad_date": "Dates must be YYYY-MM-DD, one per line.",
       "bad_leave": "Use “2026-12-01..2026-12-05 annual” or “2026-12-01 sick”, one per line."
     },
     "abort": {
-      "no_employees": "No employees found. Enrol them in the camera's Employee face library first."
+      "no_employees": "No employees recognised yet. The camera must recognise someone from its Employee library first."
     }
   },
   "services": {
@@ -139,14 +107,26 @@
         "date": { "name": "Date", "description": "Any date inside the period. Defaults to today." }
       }
     },
+    "export_presence": {
+      "name": "Export presence CSV",
+      "description": "Recognised-presence CSV for a date range. Admin only.",
+      "fields": {
+        "start": { "name": "First date", "description": "Start of the range." },
+        "end": { "name": "Last date", "description": "End of the range." }
+      }
+    },
     "recalculate": {
       "name": "Recalculate a period",
-      "description": "Re-derive attendance after an HR policy change. Raw events are never modified.",
+      "description": "Re-derive presence statuses after a calendar change. Raw events and stored timestamps are never modified.",
       "fields": {
         "start": { "name": "First date", "description": "Start of the period." },
         "end": { "name": "Last date", "description": "End of the period." },
         "reason": { "name": "Reason", "description": "Recorded in the audit log." }
       }
+    },
+    "list_libraries": {
+      "name": "List camera face libraries",
+      "description": "Read-only summary of the camera's face libraries."
     }
   }
 }

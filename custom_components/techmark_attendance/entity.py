@@ -21,7 +21,7 @@ class TechmarkEntity(CoordinatorEntity[TechmarkCoordinator]):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.entry.entry_id)},
             manufacturer="Hikvision",
-            model=info.get("model") or "DeepinView camera",
+            model=info.get("model") or "Hikvision camera",
             name=coordinator.entry.title,
             sw_version=info.get("firmwareVersion") or None,
             serial_number=info.get("serialNumber") or None,

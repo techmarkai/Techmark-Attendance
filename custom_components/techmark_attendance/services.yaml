@@ -1,8 +1,8 @@
 generate_report:
   name: Generate report
   description: >-
-    Write an Excel report. Admin only. Visitor reports never contain a unique
-    visitor figure while the camera's dedup counter remains unverified.
+    Write an Excel report. Admin only. Presence figures are recognition-based
+    and are not verified attendance; camera statistics include employees.
   fields:
     kind:
       name: Report
@@ -10,39 +10,35 @@ generate_report:
       selector:
         select:
           options:
-            - label: Daily attendance
-              value: daily_attendance
-            - label: Monthly attendance
-              value: monthly_attendance
-            - label: Daily visitors
-              value: daily_visitors
-            - label: Monthly visitors
-              value: monthly_visitors
+            - label: Daily presence
+              value: daily_presence
+            - label: Monthly presence
+              value: monthly_presence
+            - label: Camera statistics
+              value: camera_statistics
     date:
       name: Date
       description: Any date inside the period. Defaults to today.
       selector:
         date:
 
+export_presence:
+  name: Export presence CSV
+  description: Recognised-presence CSV for a date range. Admin only.
+  fields:
+    start: {name: First date, required: true, selector: {date: }}
+    end: {name: Last date, required: true, selector: {date: }}
+
 recalculate:
   name: Recalculate a period
   description: >-
-    Re-derive attendance for a past period after changing HR policy. Raw camera
-    events are never modified; the request is written to the audit log.
+    Re-derive presence statuses for a past period after a calendar change. Raw
+    events and stored timestamps are never modified; the request is audited.
   fields:
-    start:
-      name: First date
-      required: true
-      selector:
-        date:
-    end:
-      name: Last date
-      required: true
-      selector:
-        date:
-    reason:
-      name: Reason
-      description: Recorded in the audit log.
-      required: true
-      selector:
-        text:
+    start: {name: First date, required: true, selector: {date: }}
+    end: {name: Last date, required: true, selector: {date: }}
+    reason: {name: Reason, required: true, selector: {text: }}
+
+list_libraries:
+  name: List camera face libraries
+  description: Read-only summary of the camera's face libraries. Never writes.

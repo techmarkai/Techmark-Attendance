@@ -62,10 +62,10 @@ async def _async_reload(hass: HomeAssistant, entry: TechmarkConfigEntry) -> None
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Deleting the integration deletes its history.
+    """Deleting the integration deletes its database.
 
-    Stated explicitly because attendance records are not recoverable
-    afterwards; the camera keeps no copy of the derived data.
+    Stated explicitly because presence history is not recoverable afterwards:
+    the camera keeps no copy of the derived records.
     """
     from pathlib import Path
 

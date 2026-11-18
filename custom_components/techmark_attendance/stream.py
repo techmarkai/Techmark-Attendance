@@ -73,9 +73,8 @@ class MultipartParser:
         return True
 
     def _next_part(self) -> Part | None:
-        if not self._find_boundary():
+        if not self._find_boundary() or self._boundary is None:
             return None
-        assert self._boundary is not None
 
         pos = self._buf.find(self._boundary)
         if pos == -1:
@@ -147,21 +146,6 @@ def _camera_time(text: str | None) -> datetime | None:
         return None
 
 
-def identity_key(human_id: str, name: str) -> str:
-    """Stable identity for a matched person.
-
-    `customHumanID` is preferred, but the Employee record on this camera has
-    an empty one, so the library name is used as a fallback rather than
-    discarding the match. The `name:` prefix keeps the two namespaces apart so
-    a person cannot be counted twice under both forms.
-    """
-    human_id = human_id.strip()
-    if human_id:
-        return human_id
-    name = name.strip()
-    return f"name:{name}" if name else ""
-
-
 class UnsafeXMLError(ValueError):
     """Raised when a document declares a DTD or entities."""
 
@@ -176,7 +160,10 @@ def safe_fromstring(text: str) -> ET.Element:
     head = text[:4096].lower()
     if "<!doctype" in head or "<!entity" in head:
         raise UnsafeXMLError("XML declares a DTD or entities")
-    return ET.fromstring(text)
+    # Both XXE and entity expansion need a DTD or an ENTITY declaration,
+    # which the check above refuses outright, so the stdlib parser is safe
+    # here and defusedxml would add a dependency for nothing.
+    return ET.fromstring(text)  # noqa: S314
 
 
 def _strip_ns(tag: str) -> str:
@@ -281,14 +268,9 @@ def _from_json(body: bytes, received: datetime) -> Event | None:
         return None
     reserve = candidate.get("reserve_field") or {}
     name = str(reserve.get("name") or "").strip()
-    # The Employee library record on this camera has an EMPTY customHumanID,
-    # so an identity keyed only on human_id would drop every employee match.
-    # Fall back to the library name, which is unique within a library.
-    human_id = identity_key(
-        str(candidate.get("human_id") or candidate.get("customHumanID") or ""), name
-    )
-    if not human_id:
-        return None
+    # The identity key itself is derived later (processor.employee_key), which
+    # keeps the decoder free of business rules. Both raw forms are passed on.
+    person_key = str(candidate.get("human_id") or candidate.get("customHumanID") or "")
     similarity = candidate.get("similarity")
     return FaceMatch(
         received=received,
@@ -296,8 +278,8 @@ def _from_json(body: bytes, received: datetime) -> Event | None:
         fdid=str(candidate.get("blacklist_id") or ""),
         library=str(candidate.get("FDLibName") or ""),
         library_threshold=_as_int(candidate.get("FDLibThreshold")),
-        human_id=human_id,
-        name=name or human_id,
+        person_key=person_key,
+        name=name,
         similarity=float(similarity) if isinstance(similarity, (int, float)) else 0.0,
         quality=quality,
         stay_ms=stay_ms,

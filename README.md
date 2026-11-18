@@ -1,75 +1,114 @@
 # Techmark Attendance
 
-Home Assistant custom integration for **employee attendance** and **visitor counting** from a
-Hikvision iDS-2CD7146G2-IZHSY. All AI runs on the camera; Home Assistant receives the events, stores
-them append-only, derives the figures and writes Excel reports.
+Standalone Home Assistant custom integration for a Hikvision iDS-2CD7146G2-IZHSY. The camera performs
+all face detection, comparison, people counting and demographic analysis. Home Assistant receives the
+events, stores them, applies calendar rules, and presents the results.
 
-Status: **implemented, not yet validated against the live camera.** 90 unit tests pass.
+**The camera is never reconfigured.** The integration issues read-only requests only, and contains no
+code path that writes camera settings, face libraries or records.
+
+Status: **implemented, not deployed.** 131 unit tests pass. Installation has not been approved.
 
 ## What it does
 
-- **Employee attendance** from the camera's `Employee` face library: first in, last out, span on site
-- **Visitor counting** from the camera's people-counting app: raw entries and exits per hour
-- **Gender and age** of classified visitors, always published with their coverage ratio
-- **All HR policy configurable in the UI** — working days, hours per weekday, grace periods,
-  holidays, leave, per-employee overrides. No code editing, no YAML.
-- **Excel reports**: daily and monthly, with a monthly overview, one sheet per employee, and a
-  detailed daily sheet
+- **Employee roster seeded from the Employee face library**, so an enrolled employee appears even
+  before they are first recognised — and shows `no_recognition` on a healthy working day rather than
+  vanishing from the report. A partial or failed library read is reported as such, never as a
+  complete roster.
+- **Employee recognised presence** from the camera's Employee face library: `first_seen`,
+  `last_seen`, a recognition count, and the elapsed span between them — one record per employee per
+  local calendar day.
+- **Camera counting and demographics**: entries, exits, duplicate people, deduplicated unique people,
+  and gender / age / mask / glasses aggregates, each with a validity verdict and provenance.
+- **Calendar configuration in the UI**: working days (default Saturday to Thursday) per company and
+  per employee, public and company holidays,
+  leave categories and approved leave. No code editing.
+- **Excel and CSV reports**, admin-only, with per-employee monthly sheets.
 
-## Honest limits
+## What it deliberately does NOT do
 
-These are properties of the camera, not bugs, and the reports state them too.
+These are limits of the camera, not gaps in the code, and the reports repeat them.
 
-- **Face events carry no direction.** Check-in is the first match of the day and check-out the last,
-  so a mid-day departure is invisible. The duration column is *span on site*, never hours worked.
-- **A single sighting produces no check-out.** The day is marked `incomplete` rather than having a
-  departure time invented for it.
-- **"Unique visitors" is not reported.** The camera's `duplicatePeopleCount` has not been shown to
-  mean unique people — in one sample it incremented twice for a single entry — so only raw entries
-  and exits are published. The counter can be exposed in options, labelled unverified.
-- **Demographic coverage is partial.** On 2026-11-18 only 14 of 90 entries were classified (16%).
-  The subset depends on where faces are capturable, so it is biased, not random. Figures are never
-  scaled up to total footfall.
-- **Face coverage is sparse.** Many people pass without a usable capture, so a short grace period
-  will produce occasional false lates.
-- **Absence is never inferred from missing data.** A camera or Home Assistant outage marks the day
-  `no_camera_data`. An employee is marked `absent` only on a configured working day, with no
-  holiday, no approved leave, and no recorded gap in the work window.
-- **Excel sheet protection** prevents accidental edits. It is **not** encryption or access control,
-  and carries no password so reports open and print freely.
+- **No attendance verdicts.** No late arrival, early departure, absence, overtime,
+  required-hours compliance or "hours worked" figure exists anywhere. The camera reports **no entry
+  or exit direction** on a face comparison, so a recognition timestamp cannot be treated as an
+  arrival or departure. Producing those numbers would be fabrication. The relevant settings are
+  saved and editable but marked `pending_verified_attendance_source` and are never applied.
+- **`presence_span` is not working time.** It is the elapsed gap between the first and last
+  recognition of the day. A mid-day departure is invisible to it.
+- **Nobody is marked absent.** A working day with no recognition is `no_recognition` — a statement
+  about events. A camera or Home Assistant outage is `no_camera_data` and always outranks it.
+- **No customer identity.** Everyone who is not an Employee-library match is an anonymous customer.
+  There are no visitor IDs, no returning-customer metric and no customer history: a non-employee
+  detection carries no stable identifier, so claiming two detections were the same person would be
+  invention.
+- **Demographics cannot exclude employees.** They arrive as aggregates with no identity attached and
+  the camera offers no library filter, so they are labelled *camera demographics — all counted
+  people, employees included and not separable*. No employee count is ever subtracted from them.
+- **An unrecognised employee is indistinguishable from a stranger.** If the camera fails to match
+  someone, the event arrives anonymous. The integration will not guess. That is controlled by the
+  camera's library threshold, not by code.
+- **The configured schedule drives nothing.** Working days default to Saturday to Thursday (Friday
+  off) and hours to 09:00–19:00, both editable. The days decide whether a date is a working day;
+  the **hours are recorded and printed on reports as context only**, because judging lateness from a
+  recognition timestamp needs entry/exit direction the camera does not provide.
+- **Invalid data is never disguised.** A bucket is `valid`, `invalid`, `incomplete` or `unavailable`;
+  a negative `enter − duplicate` is flagged rather than clamped to zero, and raw counters are always
+  preserved. A genuine zero, unknown, unavailable, invalid and incomplete stay five distinct states.
 
-## Attendance statuses
+## Statuses
 
-`present` · `late` · `early_departure` · `absent` · `approved_leave` · `holiday` · `weekend` ·
-`incomplete` · `no_camera_data` · `unverified`
+`recognised` · `single_recognition` · `no_recognition` · `no_camera_data` · `holiday` ·
+`approved_leave` · `non_working_day`
 
 ## Data integrity
 
-Raw face events and counter samples are **append-only and never edited**. Every reported figure is
-derived and can be rebuilt. The `recalculate` service re-derives a past period and writes an audit
-row; it never alters raw events or invents a timestamp. Counter samples are stored as cumulative
-values, so the camera's daily reset and any reboot show up as a reset rather than corrupting totals.
+Derived records are written **at ingestion**, so event retention cannot erase history. Only
+`face_events` and `counter_samples` are ever purged; employees, presence, policy snapshots, counting
+buckets, demographics, gaps and audit rows are permanent.
 
-No images or face templates are stored — only identity, scores and timestamps.
+Ingestion is **idempotent**: the camera's `pid` is unique per detection and derived rows are updated
+only when the insert actually happened, so a replayed event changes nothing. Timestamp extremes use
+`MIN`/`MAX`, which are commutative, so **delayed and out-of-order events are handled correctly** — a
+late-arriving earlier recognition moves `first_seen` backwards.
+
+Schema changes are numbered, additive and transactional; `PRAGMA user_version` is bumped only after
+a step commits, so an interrupted upgrade re-runs cleanly. A failed integrity check refuses to open
+the database rather than writing into a damaged file.
+
+**Policy snapshots** record the calendar that applied to each date the first time it is processed, so
+editing settings cannot rewrite history. Pre-existing dates are backfilled once, marked `inferred`,
+and never presented as verified fact.
 
 ## Services
 
 | Service | Purpose |
 |---|---|
-| `techmark_attendance.generate_report` | Write a daily/monthly attendance or visitor workbook. Admin only. |
-| `techmark_attendance.recalculate` | Re-derive a past period after a policy change. Admin only, audited. |
+| `generate_report` | Daily or monthly presence workbook, or a camera-statistics workbook |
+| `export_presence` | Recognised-presence CSV for a date range |
+| `recalculate` | Re-derive a past period; audited; never alters raw events |
+| `list_libraries` | Read-only camera face-library summary |
+
+All are admin-only and audited. None writes to the camera.
+
+## Security
+
+- Formula-injection escaping for every camera-sourced string (`=`, `+`, `-`, `@`, tab, CR, LF and
+  leading control characters) while dates, times, numbers and durations keep real cell types.
+- `[h]:mm` elapsed format, so a 31-hour total does not render as 07:00.
+- Sheet protection with **no password**: reports open and print freely. That prevents accidental
+  edits and is **not** encryption or access control.
+- XML parsed with DTDs refused, which defeats XXE and entity-expansion attacks. The camera is a
+  trust boundary.
+- Diagnostics carry aggregate counts and technical status only — no employee names, identity keys,
+  credentials or private camera details.
+- Credentials live in the config entry, which Home Assistant stores unencrypted in `.storage`
+  (platform norm, protected by host access).
 
 ## Install
 
-HACS → Custom repositories → this repo (Integration), then add **Techmark Attendance** under
-Settings → Devices & services. Requires Home Assistant 2026.11 or newer; `openpyxl` is installed
+Not yet approved for deployment. Requires Home Assistant 2026.11 or newer; `openpyxl` installs
 automatically.
-
-## Before it means anything
-
-**Enrol your employees in the camera's `Employee` face library.** The integration reads the roster
-from the camera, and at the time of writing only one record exists. Attendance has nothing to match
-against until the rest are enrolled.
 
 ## Development
 
@@ -78,19 +117,8 @@ pip install openpyxl pytest
 python -m pytest tests/ -q
 ```
 
-The pure modules (`stream`, `hr`, `stats`, `store`, `report`, `processor`) carry no Home Assistant
-imports and are tested without the HA runtime. Design notes: `docs/specs/`.
+The core modules (`stream`, `hr`, `stats`, `store`, `report`, `processor`, `models`, `const`) carry no
+Home Assistant imports and are tested without the HA runtime. `tests/test_no_unsupported_claims.py`
+asserts over the source tree to stop the forbidden claims reappearing in a label or a column header.
 
-## Security notes
-
-- **XML from the camera is parsed with DTDs refused**, which defeats XXE and entity-expansion
-  attacks. A hostile part is dropped rather than killing the event stream.
-- **Spreadsheet formula injection is neutralised.** Names come from the camera's face library, which
-  anyone with camera access can write, so a value beginning `=`, `+`, `-`, `@`, tab or carriage
-  return is escaped before it reaches a cell. The text still displays; it just cannot execute when
-  HR opens the workbook.
-- **Diagnostics carry no identities.** Because `customHumanID` is empty on this camera the identity
-  keys are employee names, so the diagnostics file reports counts per status rather than who was
-  absent. Diagnostics downloads are routinely attached to bug reports.
-- **Credentials** live in the config entry, which Home Assistant stores unencrypted in `.storage`
-  (the platform norm). Diagnostics redact host, username, password, serial and MAC.
+Design: `docs/specs/2026-11-18-architecture-plan.md`.

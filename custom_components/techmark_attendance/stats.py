@@ -1,136 +1,154 @@
-"""Aggregation over stored rows. Read-only, pure given its inputs."""
+"""Counting-bucket validity and aggregation. Pure functions, no I/O.
+
+Lineage B only. Nothing here touches employee recognition data, and no figure
+produced here is ever combined with a lineage-A figure.
+"""
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass, field
 from datetime import date as Date
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from .const import CATEGORY_AGE, CATEGORY_GENDER, CATEGORY_MASK
-from .models import Coverage
-
-
-@dataclass(slots=True)
-class VisitorTotals:
-    """Crossings for a period, with demographics kept strictly separate."""
-
-    enter: int = 0
-    exit: int = 0
-    duplicate_people: int = 0
-    gender: dict[str, int] = field(default_factory=dict)
-    age: dict[str, int] = field(default_factory=dict)
-    mask: dict[str, int] = field(default_factory=dict)
-
-    @property
-    def classified(self) -> int:
-        """People given a demographic classification.
-
-        The camera's three lists always agree with each other, so gender is
-        used as the count and age is a cross-check.
-        """
-        return sum(self.gender.values())
-
-    @property
-    def coverage(self) -> Coverage:
-        return Coverage(classified=self.classified, total_entries=self.enter)
+from .const import (
+    CATEGORY_AGE,
+    CATEGORY_GENDER,
+    CATEGORY_GLASS,
+    CATEGORY_MASK,
+    INCOMPLETE,
+    INVALID,
+    UNAVAILABLE,
+    VALID,
+)
+from .models import CountingBucket
 
 
-def aggregate_visitors(
-    hour_rows: list[Any], demo_rows: list[Any]
-) -> dict[str, VisitorTotals]:
-    """Group stored hourly rows into per-date totals."""
-    out: dict[str, VisitorTotals] = defaultdict(VisitorTotals)
-    for row in hour_rows:
-        totals = out[row["date"]]
-        totals.enter += int(row["enter"] or 0)
-        totals.exit += int(row["exit"] or 0)
-        totals.duplicate_people += int(row["dedup"] or 0)
-    for row in demo_rows:
-        totals = out[row["date"]]
-        bucket = {
-            CATEGORY_GENDER: totals.gender,
-            CATEGORY_AGE: totals.age,
-            CATEGORY_MASK: totals.mask,
-        }.get(row["category"])
-        if bucket is None:
-            continue
-        bucket[row["value"]] = bucket.get(row["value"], 0) + int(row["count"] or 0)
-    return dict(out)
+def evaluate_bucket(
+    period: str,
+    bucket_start: str,
+    enter: int | None,
+    exit_: int | None,
+    duplicate_people: int | None,
+    demographics: dict[str, dict[str, int]] | None = None,
+    *,
+    gap_overlaps: bool = False,
+) -> CountingBucket:
+    """Decide a bucket's validity and derived unique count.
 
+    Rules, in order:
+      * missing counters              -> unavailable, unique None
+      * enter - duplicate < 0         -> invalid,     unique None (never clamped)
+      * attribute sums disagree       -> invalid,     unique None
+      * a camera gap overlaps         -> incomplete,  unique kept when consistent
+      * otherwise                     -> valid
 
-def sum_totals(per_day: dict[str, VisitorTotals]) -> VisitorTotals:
-    """Combine day totals into one period total."""
-    combined = VisitorTotals()
-    for totals in per_day.values():
-        combined.enter += totals.enter
-        combined.exit += totals.exit
-        combined.duplicate_people += totals.duplicate_people
-        for src, dst in (
-            (totals.gender, combined.gender),
-            (totals.age, combined.age),
-            (totals.mask, combined.mask),
-        ):
-            for key, value in src.items():
-                dst[key] = dst.get(key, 0) + value
-    return combined
-
-
-def employees_seen(match_rows: list[Any]) -> dict[str, dict[str, Any]]:
-    """First and last sighting per employee from raw match rows."""
-    seen: dict[str, dict[str, Any]] = {}
-    for row in match_rows:
-        human_id = row["human_id"]
-        if not human_id:
-            continue
-        ts = datetime.fromisoformat(row["ts"])
-        record = seen.get(human_id)
-        if record is None:
-            seen[human_id] = {
-                "name": row["name"] or human_id,
-                "first": ts,
-                "last": ts,
-                "sightings": 1,
-            }
-        else:
-            record["last"] = ts
-            record["sightings"] += 1
-    return seen
-
-
-def match_times_for(match_rows: list[Any], human_id: str) -> list[datetime]:
-    """Ascending sighting times for one employee."""
-    return [
-        datetime.fromisoformat(row["ts"])
-        for row in match_rows
-        if row["human_id"] == human_id
-    ]
-
-
-def day_bounds(day: Date, tz: ZoneInfo) -> tuple[datetime, datetime]:
-    """Local midnight to local midnight."""
-    start = datetime.combine(day, datetime.min.time(), tzinfo=tz)
-    return start, start + timedelta(days=1)
-
-
-def month_bounds(day: Date, tz: ZoneInfo, start_day: int = 1) -> tuple[Date, Date]:
-    """Inclusive first and last date of the reporting month containing `day`.
-
-    `start_day` supports a reporting month that does not begin on the 1st.
+    The raw counters are preserved in every case. An invalid bucket reports no
+    derived figure rather than a plausible-looking zero.
     """
+    demographics = demographics or {}
+
+    if enter is None or duplicate_people is None:
+        return CountingBucket(
+            period, bucket_start, enter, exit_, duplicate_people, None, UNAVAILABLE, demographics
+        )
+
+    derived = enter - duplicate_people
+    if derived < 0:
+        return CountingBucket(
+            period, bucket_start, enter, exit_, duplicate_people, None, INVALID, demographics
+        )
+
+    # Each demographic category is counted once per deduplicated person, so a
+    # category that disagrees with the subtraction means the bucket is not
+    # internally consistent and must not yield a derived figure.
+    for category in (CATEGORY_GENDER, CATEGORY_AGE, CATEGORY_MASK, CATEGORY_GLASS):
+        values = demographics.get(category)
+        if values and sum(values.values()) != derived:
+            return CountingBucket(
+                period, bucket_start, enter, exit_, duplicate_people, None, INVALID, demographics
+            )
+
+    validity = INCOMPLETE if gap_overlaps else VALID
+    return CountingBucket(
+        period, bucket_start, enter, exit_, duplicate_people, derived, validity, demographics
+    )
+
+
+def sum_buckets(buckets: list[CountingBucket]) -> dict[str, Any]:
+    """Totals over buckets, keeping invalid ones visible instead of hiding them.
+
+    `unique_people` is None when any contributing bucket was not valid: a
+    partial total would read as a complete one.
+    """
+    enter = exit_ = dedup = 0
+    unique: int | None = 0
+    demographics: dict[str, dict[str, int]] = {}
+    counts = {VALID: 0, INVALID: 0, INCOMPLETE: 0, UNAVAILABLE: 0}
+
+    for bucket in buckets:
+        counts[bucket.validity] = counts.get(bucket.validity, 0) + 1
+        enter += bucket.enter or 0
+        exit_ += bucket.exit or 0
+        dedup += bucket.duplicate_people or 0
+        if bucket.unique_people is None:
+            unique = None
+        elif unique is not None:
+            unique += bucket.unique_people
+        for category, values in bucket.demographics.items():
+            target = demographics.setdefault(category, {})
+            for value, count in values.items():
+                target[value] = target.get(value, 0) + count
+
+    # No buckets means nothing was retrieved, which is unknown, not zero.
+    if not buckets or counts[INVALID] or counts[UNAVAILABLE]:
+        unique = None
+
+    if not buckets:
+        overall = UNAVAILABLE
+    elif counts[INVALID]:
+        overall = INVALID
+    elif counts[UNAVAILABLE]:
+        overall = UNAVAILABLE
+    elif counts[INCOMPLETE]:
+        overall = INCOMPLETE
+    else:
+        overall = VALID
+
+    return {
+        "enter": enter,
+        "exit": exit_,
+        "duplicate_people": dedup,
+        "unique_people": unique,
+        "validity": overall,
+        "demographics": demographics,
+        "bucket_counts": counts,
+    }
+
+
+def classified_total(demographics: dict[str, dict[str, int]]) -> int | None:
+    """People carrying a demographic classification.
+
+    None means unknown (the camera returned no classification data), which is
+    deliberately distinct from a classified total of zero.
+    """
+    gender = demographics.get(CATEGORY_GENDER)
+    if not gender:
+        return None
+    return sum(gender.values())
+
+
+def month_bounds(day: Date, start_day: int = 1) -> tuple[Date, Date]:
+    """Inclusive first and last date of the reporting month containing `day`."""
     start_day = max(1, min(28, int(start_day or 1)))
     if day.day >= start_day:
         first = day.replace(day=start_day)
     else:
-        prev = (day.replace(day=1) - timedelta(days=1)).replace(day=start_day)
-        first = prev
-    # Last day is the day before the next period starts.
-    if first.month == 12:
-        nxt = first.replace(year=first.year + 1, month=1)
-    else:
-        nxt = first.replace(month=first.month + 1)
+        first = (day.replace(day=1) - timedelta(days=1)).replace(day=start_day)
+    nxt = (
+        first.replace(year=first.year + 1, month=1)
+        if first.month == 12
+        else first.replace(month=first.month + 1)
+    )
     return first, nxt - timedelta(days=1)
 
 
@@ -143,8 +161,13 @@ def date_range(first: Date, last: Date) -> list[Date]:
     return days
 
 
-def attendance_percentage(present_days: int, scheduled_days: int) -> float | None:
-    """None when nothing was scheduled, so no report shows a fabricated 0%."""
-    if scheduled_days <= 0:
+def recognition_rate(days_with_recognition: int, working_days: int) -> float | None:
+    """Share of working days with at least one recognition.
+
+    Named for exactly what it measures. This is NOT an attendance percentage
+    and must never be presented as compliance: a recognition is not a verified
+    arrival. None when no working days were configured.
+    """
+    if working_days <= 0:
         return None
-    return round(present_days * 100 / scheduled_days, 1)
+    return round(days_with_recognition * 100 / working_days, 1)

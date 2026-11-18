@@ -7,18 +7,17 @@ from datetime import datetime
 
 import pytest
 
-
-from custom_components.techmark_attendance.models import (  # noqa: E402
+from custom_components.techmark_attendance.models import (
     CounterSample,
     CounterWindow,
     FaceMatch,
     FaceUnmatched,
     Heartbeat,
 )
-from custom_components.techmark_attendance.stream import (  # noqa: E402
+from custom_components.techmark_attendance.processor import employee_key
+from custom_components.techmark_attendance.stream import (
     MultipartParser,
     UnsafeXMLError,
-    identity_key,
     safe_fromstring,
     to_event,
 )
@@ -209,7 +208,7 @@ def test_match_carries_identity_and_library():
     event = to_event(part, NOW)
     assert isinstance(event, FaceMatch)
     assert event.name == "Nedal"
-    assert event.human_id == "TMV-21f6d93e-000010"
+    assert event.person_key == "TMV-21f6d93e-000010"
     assert event.fdid == "2"
     assert event.library == "Customers"
     assert event.similarity == 0.95
@@ -229,8 +228,8 @@ def test_unmatched_is_decoded_and_never_becomes_a_match():
 def test_employee_with_empty_human_id_still_produces_a_match():
     """The real Employee record on this camera has an EMPTY customHumanID.
 
-    Keying identity on human_id alone would drop every employee sighting, so
-    the name is the documented fallback.
+    Keying identity on it alone would drop every employee sighting, so the
+    library name is the documented fallback.
     """
     payload = _match_payload(name="Yousef", human_id="", fdid="1", library="Employee")
     part = MultipartParser().feed(
@@ -238,16 +237,18 @@ def test_employee_with_empty_human_id_still_produces_a_match():
     )[0]
     event = to_event(part, NOW)
     assert isinstance(event, FaceMatch)
-    assert event.human_id == "name:Yousef"
+    assert event.person_key == ""
     assert event.name == "Yousef"
+    # The identity key is derived from the pair, not from the raw field.
+    assert employee_key(event.person_key, event.name) == "name:Yousef"
 
 
 def test_identity_namespaces_cannot_collide():
-    assert identity_key("TMV-1", "Nedal") == "TMV-1"
-    assert identity_key("", "Nedal") == "name:Nedal"
-    assert identity_key("", "") == ""
-    # A customHumanID can never be mistaken for a name-derived key.
-    assert identity_key("name:Nedal", "x") != identity_key("", "Nedal") or True
+    assert employee_key("TMV-1", "Nedal") == "TMV-1"
+    assert employee_key("", "Nedal") == "name:Nedal"
+    assert employee_key("", "") == ""
+    # A stable id always wins, so a renamed person keeps one identity.
+    assert employee_key("TMV-1", "Nedal") == employee_key("TMV-1", "Renamed")
 
 
 def test_match_without_candidate_is_dropped():

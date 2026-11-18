@@ -1,9 +1,11 @@
-"""Event dataclasses. Pure data, no I/O."""
+"""Typed data models. Pure data, no I/O."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from .const import SOURCE_EMPLOYEE_RECOGNITION
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,14 +22,18 @@ class Part:
 
 @dataclass(frozen=True, slots=True)
 class FaceMatch:
-    """A face that matched a library record."""
+    """A face that matched some library.
+
+    `fdid` and `library` are used to decide whether this is an employee and are
+    then discarded: no library identifier is persisted.
+    """
 
     received: datetime
     camera_time: datetime | None
     fdid: str
     library: str
     library_threshold: int | None
-    human_id: str
+    person_key: str
     name: str
     similarity: float
     quality: int | None
@@ -37,7 +43,11 @@ class FaceMatch:
 
 @dataclass(frozen=True, slots=True)
 class FaceUnmatched:
-    """A face that matched nothing. Never a person count."""
+    """A face that matched nothing.
+
+    Anonymous: `pid` is unique per detection, not per person, so these are
+    never deduplicated and never counted as people.
+    """
 
     received: datetime
     camera_time: datetime | None
@@ -77,56 +87,68 @@ class Heartbeat:
 
 @dataclass(frozen=True, slots=True)
 class RawEvent:
-    """An event type we do not model. Logged at debug, never dropped silently."""
+    """An event type we do not model. Logged at debug, never silently dropped."""
 
     received: datetime
     event_type: str
 
 
-Event = (
-    FaceMatch | FaceUnmatched | CounterSample | CounterWindow | Heartbeat | RawEvent
-)
+Event = CounterSample | CounterWindow | FaceMatch | FaceUnmatched | Heartbeat | RawEvent
 
 
 @dataclass(frozen=True, slots=True)
-class DayRecord:
-    """A derived attendance day for one employee."""
+class PresenceDay:
+    """One employee's recognised presence for one local calendar day.
 
-    date: str
-    human_id: str
-    name: str
+    Deliberately carries no late, early, overtime or absence figure: each would
+    require treating a recognition timestamp as a verified arrival or
+    departure, which the camera cannot support.
+    """
+
+    day: str
+    employee_key: str
+    display_name: str
     status: str
-    first_in: datetime | None = None
-    last_out: datetime | None = None
-    span_minutes: int | None = None
-    scheduled_minutes: int | None = None
-    late_minutes: int = 0
-    early_minutes: int = 0
-    overtime_minutes: int = 0
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
+    recognitions: int = 0
+    presence_span_minutes: int | None = None
     flags: tuple[str, ...] = field(default_factory=tuple)
+    policy_hash: str | None = None
+    source: str = SOURCE_EMPLOYEE_RECOGNITION
 
     @property
-    def span_hhmm(self) -> str:
-        """Span on site as HH:MM. Not hours worked."""
-        if self.span_minutes is None:
+    def presence_span_hhmm(self) -> str:
+        """Elapsed span between first and last recognition, as HH:MM.
+
+        Not a working duration.
+        """
+        if self.presence_span_minutes is None:
             return ""
-        return f"{self.span_minutes // 60:02d}:{self.span_minutes % 60:02d}"
+        return f"{self.presence_span_minutes // 60:02d}:{self.presence_span_minutes % 60:02d}"
 
 
 @dataclass(frozen=True, slots=True)
-class Coverage:
-    """Classified people against total crossings for the same period."""
+class CountingBucket:
+    """One camera counting bucket with its validity verdict.
 
-    classified: int
-    total_entries: int
+    `unique_people` is None unless the bucket is valid: an invalid bucket keeps
+    its raw counters and reports no derived figure rather than a plausible one.
+    """
+
+    period: str
+    bucket_start: str
+    enter: int | None
+    exit: int | None
+    duplicate_people: int | None
+    unique_people: int | None
+    validity: str
+    demographics: dict[str, dict[str, int]] = field(default_factory=dict)
 
     @property
-    def pct(self) -> float | None:
-        """None when there were no crossings; never a fabricated 0% or 100%."""
-        if self.total_entries <= 0:
+    def classified_total(self) -> int | None:
+        """People carrying a demographic classification, or None if unknown."""
+        gender = self.demographics.get("gender")
+        if not gender:
             return None
-        return round(self.classified * 100 / self.total_entries, 1)
-
-    def is_low(self, floor_pct: int) -> bool:
-        pct = self.pct
-        return pct is not None and pct < floor_pct
+        return sum(gender.values())
