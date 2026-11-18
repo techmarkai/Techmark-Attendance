@@ -1,9 +1,13 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
 camera-backup/
 *.db
+*.db-wal
+*.db-shm
 *.bin
 *.pcap
+*.xlsx
 secrets.yaml
 .venv/

@@ -1,0 +1,152 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect the camera",
+        "description": "The camera performs all face comparison and people counting. Home Assistant only receives the events.",
+        "data": {
+          "host": "Host or IP address",
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter the camera credentials",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the camera.",
+      "invalid_auth": "The camera rejected those credentials."
+    },
+    "abort": {
+      "already_configured": "This camera is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Techmark Attendance",
+        "description": "All HR policy is configured here. No file editing is needed.",
+        "menu_options": {
+          "schedule": "Working schedule",
+          "day_override": "Hours for one weekday",
+          "rules": "Attendance rules",
+          "holidays": "Holidays and leave categories",
+          "employees": "Employees",
+          "reports": "Reports and visitor options",
+          "save": "Save and close"
+        }
+      },
+      "schedule": {
+        "title": "Working schedule",
+        "description": "The default for every working day. Use “Hours for one weekday” to vary a single day.",
+        "data": {
+          "working_days": "Working days",
+          "start_time": "Official start (HH:MM)",
+          "end_time": "Official end (HH:MM)",
+          "required_hours": "Required hours per day",
+          "break_minutes": "Break minutes",
+          "break_paid": "Break is paid",
+          "overnight_shift": "Shift crosses midnight"
+        }
+      },
+      "day_override": {
+        "title": "Which weekday?",
+        "data": { "weekday": "Weekday" }
+      },
+      "day_edit": {
+        "title": "Hours for {weekday}",
+        "data": {
+          "working": "This is a working day",
+          "start_time": "Start (HH:MM)",
+          "end_time": "End (HH:MM)",
+          "required_hours": "Required hours",
+          "clear": "Remove this override and use the default"
+        }
+      },
+      "rules": {
+        "title": "Attendance rules",
+        "description": "Face coverage is sparse, so a short grace period will produce occasional false lates.",
+        "data": {
+          "grace_minutes": "Late arrival grace",
+          "early_tolerance_minutes": "Early departure tolerance (minutes)",
+          "min_daily_hours": "Minimum daily hours",
+          "overtime_enabled": "Calculate overtime",
+          "overtime_threshold_minutes": "Overtime threshold (minutes beyond required)",
+          "min_face_quality": "Minimum face quality for unmatched faces"
+        }
+      },
+      "holidays": {
+        "title": "Holidays and leave",
+        "description": "One ISO date (YYYY-MM-DD) per line. Leave categories, one per line.",
+        "data": {
+          "public_holidays": "Public holidays",
+          "company_holidays": "Company holidays",
+          "leave_categories": "Leave categories"
+        }
+      },
+      "employees": {
+        "title": "Choose an employee",
+        "description": "The roster comes from the camera's Employee face library.",
+        "data": { "employee": "Employee" }
+      },
+      "employee_edit": {
+        "title": "{employee}",
+        "description": "Approved leave: one entry per line, as “2026-12-01..2026-12-05 annual” or “2026-12-01 sick”.",
+        "data": {
+          "name": "Display name",
+          "employee_id": "Employee ID",
+          "active": "Active",
+          "use_custom_hours": "This employee has different hours",
+          "start_time": "Start (HH:MM)",
+          "end_time": "End (HH:MM)",
+          "required_hours": "Required hours",
+          "leave": "Approved leave"
+        }
+      },
+      "reports": {
+        "title": "Reports and visitor options",
+        "data": {
+          "report_dir": "Report folder name (inside the config directory)",
+          "month_start_day": "Reporting month starts on day",
+          "date_format": "Date format",
+          "time_format": "Time format",
+          "coverage_floor_pct": "Flag demographics below this coverage %",
+          "unique_visitors_enabled": "Expose the camera's duplicatePeople counter (meaning unverified)",
+          "retention_days": "Keep raw events for (days)"
+        }
+      }
+    },
+    "error": {
+      "bad_time": "Times must be HH:MM in 24-hour form.",
+      "bad_date": "Dates must be YYYY-MM-DD, one per line.",
+      "bad_leave": "Use “2026-12-01..2026-12-05 annual” or “2026-12-01 sick”, one per line."
+    },
+    "abort": {
+      "no_employees": "No employees found. Enrol them in the camera's Employee face library first."
+    }
+  },
+  "services": {
+    "generate_report": {
+      "name": "Generate report",
+      "description": "Write an Excel report. Admin only.",
+      "fields": {
+        "kind": { "name": "Report", "description": "Which report to write." },
+        "date": { "name": "Date", "description": "Any date inside the period. Defaults to today." }
+      }
+    },
+    "recalculate": {
+      "name": "Recalculate a period",
+      "description": "Re-derive attendance after an HR policy change. Raw events are never modified.",
+      "fields": {
+        "start": { "name": "First date", "description": "Start of the period." },
+        "end": { "name": "Last date", "description": "End of the period." },
+        "reason": { "name": "Reason", "description": "Recorded in the audit log." }
+      }
+    }
+  }
+}

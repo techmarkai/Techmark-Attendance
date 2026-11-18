@@ -1,38 +1,82 @@
 # Techmark Attendance
 
 Home Assistant custom integration for **employee attendance** and **visitor counting** from a
-Hikvision iDS-2CD7146G2-IZHSY. All AI runs on the camera; Home Assistant receives the events,
-stores them append-only, derives the figures and writes Excel reports.
+Hikvision iDS-2CD7146G2-IZHSY. All AI runs on the camera; Home Assistant receives the events, stores
+them append-only, derives the figures and writes Excel reports.
 
-Status: **design approved, implementation not started.** See `docs/specs/`.
+Status: **implemented, not yet validated against the live camera.** 90 unit tests pass.
 
 ## What it does
 
-- Employee attendance from the camera's `Employee` face library: first in, last out, span on site
-- Visitor counting from the camera's people-counting app: raw entries and exits
-- All HR policy configurable in the Home Assistant UI — working days, hours, grace periods,
-  holidays, leave, per-employee overrides. No code editing.
-- Professional Excel reports: monthly overview, one sheet per employee, detailed daily sheet
+- **Employee attendance** from the camera's `Employee` face library: first in, last out, span on site
+- **Visitor counting** from the camera's people-counting app: raw entries and exits per hour
+- **Gender and age** of classified visitors, always published with their coverage ratio
+- **All HR policy configurable in the UI** — working days, hours per weekday, grace periods,
+  holidays, leave, per-employee overrides. No code editing, no YAML.
+- **Excel reports**: daily and monthly, with a monthly overview, one sheet per employee, and a
+  detailed daily sheet
 
 ## Honest limits
 
+These are properties of the camera, not bugs, and the reports state them too.
+
 - **Face events carry no direction.** Check-in is the first match of the day and check-out the last,
-  so a mid-day departure is invisible. The duration column is *span on site*, not hours worked.
+  so a mid-day departure is invisible. The duration column is *span on site*, never hours worked.
+- **A single sighting produces no check-out.** The day is marked `incomplete` rather than having a
+  departure time invented for it.
 - **"Unique visitors" is not reported.** The camera's `duplicatePeopleCount` has not been shown to
-  mean unique people, so only raw entries and exits are published. See U-1 in the design.
-- **Face coverage is sparse.** Many people pass without a usable face capture.
+  mean unique people — in one sample it incremented twice for a single entry — so only raw entries
+  and exits are published. The counter can be exposed in options, labelled unverified.
+- **Demographic coverage is partial.** On 2026-11-18 only 14 of 90 entries were classified (16%).
+  The subset depends on where faces are capturable, so it is biased, not random. Figures are never
+  scaled up to total footfall.
+- **Face coverage is sparse.** Many people pass without a usable capture, so a short grace period
+  will produce occasional false lates.
 - **Absence is never inferred from missing data.** A camera or Home Assistant outage marks the day
-  `no_camera_data`, never `absent`.
-- Excel sheet protection prevents accidental edits. It is **not** encryption or access control.
+  `no_camera_data`. An employee is marked `absent` only on a configured working day, with no
+  holiday, no approved leave, and no recorded gap in the work window.
+- **Excel sheet protection** prevents accidental edits. It is **not** encryption or access control,
+  and carries no password so reports open and print freely.
+
+## Attendance statuses
+
+`present` · `late` · `early_departure` · `absent` · `approved_leave` · `holiday` · `weekend` ·
+`incomplete` · `no_camera_data` · `unverified`
+
+## Data integrity
+
+Raw face events and counter samples are **append-only and never edited**. Every reported figure is
+derived and can be rebuilt. The `recalculate` service re-derives a past period and writes an audit
+row; it never alters raw events or invents a timestamp. Counter samples are stored as cumulative
+values, so the camera's daily reset and any reboot show up as a reset rather than corrupting totals.
+
+No images or face templates are stored — only identity, scores and timestamps.
+
+## Services
+
+| Service | Purpose |
+|---|---|
+| `techmark_attendance.generate_report` | Write a daily/monthly attendance or visitor workbook. Admin only. |
+| `techmark_attendance.recalculate` | Re-derive a past period after a policy change. Admin only, audited. |
 
 ## Install
 
-Not yet published. Once implemented: HACS → Custom repositories → this repo (Integration).
+HACS → Custom repositories → this repo (Integration), then add **Techmark Attendance** under
+Settings → Devices & services. Requires Home Assistant 2026.11 or newer; `openpyxl` is installed
+automatically.
 
-## Visitor demographics
+## Before it means anything
 
-Gender and age come from the camera's people-counting statistics, per hour. They are reported as
-**counts of classified people with their coverage ratio attached** — on 2026-11-18 only 14 of 90
-entries were classified, about 16%. The subset is shaped by where faces are capturable, so it is
-biased rather than random. Figures are never scaled up to estimate total footfall, and a percentage
-implying the whole visitor population is never shown.
+**Enrol your employees in the camera's `Employee` face library.** The integration reads the roster
+from the camera, and at the time of writing only one record exists. Attendance has nothing to match
+against until the rest are enrolled.
+
+## Development
+
+```bash
+pip install openpyxl pytest
+python -m pytest tests/ -q
+```
+
+The pure modules (`stream`, `hr`, `stats`, `store`, `report`, `processor`) carry no Home Assistant
+imports and are tested without the HA runtime. Design notes: `docs/specs/`.
