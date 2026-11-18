@@ -20,6 +20,8 @@ derives figures, and reports.
 | Counting and face events coexist | one 4-min `alertStream` sample: 17 `PeopleCounting` + 6 `alarmResult` |
 | App memory conflict is real but narrow | app 2 (1750) will not start beside app 7 (400): `noMemory. app start failed`. Irrelevant, because app 3 alone produces comparison results |
 | Counting query | `POST /ISAPI/System/Video/inputs/channels/1/counting/search`, `statisticType` **must** be `duplicatePeople`; `enter`/`leave` rejected. Returns 24 hourly buckets with `enterCount`, `exitCount`, `peoplePassingCount`, `duplicatePeopleCount` + gender/age/mask |
+| Demographics carry real data | per hourly bucket: `GenderList` (`unknown`/`male`/`female`), `AgeGroupList` (`unknown`/`kid`/`child`/`teenager`/`young`/`middle`/`middleAged`/`prime`/`old`), `MaskList` (`unknown`/`yes`/`no`). 2026-11-18: male 12, female 2; `middle` 7, `prime` 6, `middleAged` 1; mask no 13, yes 1 |
+| Demographic coverage is partial and self-consistent | the three lists always sum to the same number per bucket (4/4/4, 9/9/9, 1/1/1) but to far less than the crossings: **14 classified against 90 entries that day, ~16%** |
 | Counting config | `enabled=true`, `countingSceneMode=entrance`, `dailyResetTime=00:00:00+03:00`, `dataUploadCycle=15`, `flowDirectionAnalysis=false` |
 | `PeopleCounting` event shapes | `statisticalMethods=realTime` → cumulative totals since daily reset, one event per increment; `=timeRange` → 15-min window summary on the quarter hour |
 | Face match payload | `faces[0].identify[0].candidate[0]`: `blacklist_id` (=FDID), `FDLibName`, `FDLibThreshold`, `human_id`, `customHumanID`, `reserve_field.name`, `similarity`, `listType` |
@@ -44,6 +46,15 @@ not been performed; the attempted walk test captured ambient traffic instead.
 Consequence for this design: **no metric is labelled "unique visitors".** Visitor figures ship as raw
 `enter` and `exit`. A unique figure exists behind an option defaulting to **off**, and the
 `duplicatePeople` series is recorded raw so the question can be answered later from stored data.
+
+**U-2: what the demographic subset represents.** Gender, age and mask are attributed to only ~16% of
+counted crossings, and it is not established which crossings qualify (presumably those with a face
+captured at sufficient quality) nor whether the subset is attributed to entries, to exits, or to
+deduplicated people. The sample is therefore **biased by capture geometry, not random**.
+
+Consequence: demographic figures are always published **with their coverage ratio beside them**, as
+counts of classified people, never as "the gender split of our visitors" and never as a percentage
+of total footfall. See §2.4.
 
 ### 1.3 Accepted limitation: no direction on face events
 
@@ -107,6 +118,7 @@ Runtime dependency: `openpyxl` pinned in `manifest.json` to the version in HA's
 | `counter_samples` | append-only | ts, enter, exit, dedup, method |
 | `attendance_days` | derived | date, human_id, first_in, last_out, span_min, status, flags |
 | `visitor_days` | derived | date, hour, enter, exit, dedup |
+| `visitor_demographics` | derived | date, hour, category (`gender`/`age`/`mask`), value, count |
 | `gaps` | append-only | start, end, cause |
 | `audit` | append-only | ts, actor, action, scope, reason |
 
@@ -129,6 +141,32 @@ negative delta and is recorded as a `gaps` row instead of corrupting the day.
 
 Day boundaries use `hass.config.time_zone`. HA receive time is authoritative; camera time is stored
 alongside, and skew over 120 s raises a repair issue.
+
+### 2.4 Visitor demographics
+
+Gender and age are read from the hourly counting statistics, stored per hour and per value, and
+reported as **counts of classified people** alongside the coverage ratio that produced them.
+
+| Category | Camera values | Reported as |
+|---|---|---|
+| `gender` | `male`, `female`, `unknown` | Male, Female, Unclassified |
+| `age` | `kid`, `child`, `teenager`, `young`, `middle`, `middleAged`, `prime`, `old`, `unknown` | readable labels, raw value kept in the database |
+| `mask` | `yes`, `no`, `unknown` | available at no extra cost; stored, surfaced only if wanted |
+
+The camera's nine age groups overlap confusingly (`middle`, `middleAged` and `prime` are distinct
+values and all three appeared in one day). Raw values are **never** collapsed or renamed in storage;
+mapping to readable labels happens only at the presentation layer, so a firmware change in the value
+set cannot silently corrupt history.
+
+**Coverage rule, enforced in code rather than left to the reader.** Every demographic figure is
+published with `classified` and `total crossings` for the same period. The integration computes
+`coverage = classified / enter`. Reports and the dashboard print, for example:
+
+> Gender of classified visitors: 12 male, 2 female — 14 of 90 entries classified (16%)
+
+A percentage of the classified subset may be shown; a percentage implying total footfall may not.
+When coverage falls below a configurable floor (default 25%) the figures are additionally marked
+*low coverage*. No demographic value is ever multiplied up to estimate the whole.
 
 ## 3. HR configuration
 
@@ -170,6 +208,12 @@ ever invented.
 - `binary_sensor.techmark_attendance_stream_connected`
 - `sensor.techmark_attendance_visitors_today` / `_this_month` — raw entries
 - `sensor.techmark_attendance_exits_today`
+- `sensor.techmark_attendance_visitors_male_today` / `_female_today` — classified counts; attributes
+  carry `classified`, `total_entries`, `coverage_pct`, `low_coverage`
+- `sensor.techmark_attendance_visitor_age_groups_today` — state is the classified total; attributes
+  carry one count per camera age value
+- `sensor.techmark_attendance_demographic_coverage_today` — percent, so the limitation is itself
+  observable and can be alerted on
 - `sensor.techmark_attendance_employees_present_today` (attribute: names)
 - per employee: `sensor.techmark_attendance_<slug>` — state is the status; attributes first_in,
   last_out, span
@@ -198,6 +242,21 @@ scheduled hours, late by, early by, status, warnings.
    last activity of the period, and a formatted KPI block.
 3. **Detailed Daily** — one row per employee per working day, with filters enabled.
 
+**Daily visitor workbook** — one row per hour: entries, exits, `duplicatePeople` raw, classified
+count, male, female, unclassified, each age group, coverage percent. A totals row, and a header block
+stating the day, the generation time and the coverage caveat.
+
+**Monthly visitor workbook**
+
+1. **Monthly Overview** — per your brief, **each day's count on its own row** plus the monthly total:
+   date, entries, exits, classified, male, female, coverage percent. Totals row at the foot.
+2. **Demographics** — monthly gender and age totals as counts, each beside its coverage ratio, with
+   the low-coverage marker where it applies.
+3. **Hourly Detail** — one row per day per hour, filters enabled, for traffic-pattern analysis.
+
+Visitor sheets never contain a "unique visitors" column while U-1 is unresolved, and never a
+percentage of total footfall derived from the classified subset.
+
 Formatting: sheet protection with **no password** so reports open and print freely; autofit column
 widths and row heights; text wrapping; `[h]:mm` duration format so totals above 24 hours display
 correctly; frozen header rows; structured tables on detail sheets; titles, period and generation
@@ -209,7 +268,9 @@ encryption or access control.
 
 ## 7. Dashboard
 
-One view, three sections: visitor statistics (today, month, daily history, monthly trend), employee
+One view, three sections: visitor statistics (today, month, daily history, monthly trend, plus a
+gender and age breakdown of classified visitors with its coverage percentage shown in the same card,
+never on its own), employee
 attendance (present now, first in, last out, status, span, late and incomplete indicators), and
 report controls. Report buttons call admin-only services; generated files are offered as
 single-use download links.
@@ -235,7 +296,9 @@ single-use download links.
 
 ## 10. Testing
 
-- Unit: parser against sanitized fixtures; counter delta and reset detection; HR day classification
+- Unit: parser against sanitized fixtures; counter delta and reset detection; **demographic coverage
+  arithmetic, including the division-by-zero case when a period has zero entries, and the rule that
+  no classified count may be scaled to total footfall**; HR day classification
   across weekends, holidays, leave, overnight shifts and gaps; status taxonomy edges; Excel
   duration formatting past 24 hours.
 - Integration: config flow, options flow round-trip and persistence, coordinator with a fake stream,
@@ -247,7 +310,7 @@ single-use download links.
 ## 11. Delivery phases
 
 1. Scaffolding, ISAPI client, stream parser, store — pure and unit-tested.
-2. Visitor engine and sensors (raw enter/exit).
+2. Visitor engine and sensors: raw enter/exit, plus the gender and age breakdown with coverage.
 3. Attendance engine and the HR options flow.
 4. Excel reports.
 5. Dashboard.
@@ -256,6 +319,8 @@ single-use download links.
 ## 12. Open items needing the owner
 
 1. **U-1 walk test** — one person entering twice in one day, with no other traffic.
+   The same capture answers **U-2**: whether that person's crossings get demographic attribution,
+   and whether the attribution follows entries, exits or deduplicated people.
 2. **Employee enrollment** — only `Yousef` is in the Employee library. Every employee needs a record
    before attendance means anything.
 3. **Official working hours** — to be set in the UI; `09:00–18:00` ships as an editable default.

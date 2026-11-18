@@ -28,3 +28,11 @@ Status: **design approved, implementation not started.** See `docs/specs/`.
 ## Install
 
 Not yet published. Once implemented: HACS → Custom repositories → this repo (Integration).
+
+## Visitor demographics
+
+Gender and age come from the camera's people-counting statistics, per hour. They are reported as
+**counts of classified people with their coverage ratio attached** — on 2026-11-18 only 14 of 90
+entries were classified, about 16%. The subset is shaped by where faces are capturable, so it is
+biased rather than random. Figures are never scaled up to estimate total footfall, and a percentage
+implying the whole visitor population is never shown.
