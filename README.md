@@ -80,3 +80,17 @@ python -m pytest tests/ -q
 
 The pure modules (`stream`, `hr`, `stats`, `store`, `report`, `processor`) carry no Home Assistant
 imports and are tested without the HA runtime. Design notes: `docs/specs/`.
+
+## Security notes
+
+- **XML from the camera is parsed with DTDs refused**, which defeats XXE and entity-expansion
+  attacks. A hostile part is dropped rather than killing the event stream.
+- **Spreadsheet formula injection is neutralised.** Names come from the camera's face library, which
+  anyone with camera access can write, so a value beginning `=`, `+`, `-`, `@`, tab or carriage
+  return is escaped before it reaches a cell. The text still displays; it just cannot execute when
+  HR opens the workbook.
+- **Diagnostics carry no identities.** Because `customHumanID` is empty on this camera the identity
+  keys are employee names, so the diagnostics file reports counts per status rather than who was
+  absent. Diagnostics downloads are routinely attached to bug reports.
+- **Credentials** live in the config entry, which Home Assistant stores unencrypted in `.storage`
+  (the platform norm). Diagnostics redact host, username, password, serial and MAC.

@@ -13,6 +13,14 @@ from .const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 REDACT = {CONF_HOST, CONF_USERNAME, CONF_PASSWORD, "serialNumber", "macAddress"}
 
 
+def _status_counts(records: dict[str, Any]) -> dict[str, int]:
+    """How many employees sit in each status, with no names or identities."""
+    counts: dict[str, int] = {}
+    for record in records.values():
+        counts[record.status] = counts.get(record.status, 0) + 1
+    return counts
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
@@ -36,11 +44,14 @@ async def async_get_config_entry_diagnostics(
             "classified": getattr(totals, "classified", None),
             "coverage_pct": getattr(getattr(totals, "coverage", None), "pct", None),
         },
-        "statuses": {
-            human_id: record.status for human_id, record in today.get("records", {}).items()
-        },
+        # Counts per status, never per person. Diagnostics downloads get
+        # attached to bug reports, and because customHumanID is empty on this
+        # camera the identity keys ARE employee names: keying by them would
+        # publish who was absent or late.
+        "status_counts": _status_counts(today.get("records", {})),
         "notes": [
             "duplicate_people_raw is the camera counter, NOT a unique-visitor count.",
             "Demographic figures cover only the classified subset.",
+            "Per-employee records are deliberately omitted: this file is shareable.",
         ],
     }

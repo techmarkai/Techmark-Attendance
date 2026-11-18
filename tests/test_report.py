@@ -311,3 +311,72 @@ def test_demographics_sheet_handles_a_day_with_no_classified_visitors(tmp_path):
 def test_report_with_no_rows_at_all_still_opens(tmp_path):
     path = write_daily_attendance(tmp_path / "e.xlsx", [], {}, meta(), False)
     assert load_workbook(path).active is not None
+
+
+# --- formula injection ---
+
+
+def test_formula_prefixes_are_escaped():
+    """Names come from the camera's face library, which anyone with camera
+    access can write. A formula must not execute when HR opens the report."""
+    from custom_components.techmark_attendance.report import sanitize_cell
+
+    for hostile in (
+        '=HYPERLINK("http://evil/","Payslip")',
+        "+1+1",
+        "-2+3",
+        "@SUM(A1:A9)",
+        "\tTabbed",
+        "\rCarriage",
+    ):
+        assert sanitize_cell(hostile).startswith("'")
+
+
+def test_ordinary_values_are_left_alone():
+    from custom_components.techmark_attendance.report import sanitize_cell
+
+    for benign in ("Yousef", "E-001", "present", "09:00", ""):
+        assert sanitize_cell(benign) == benign
+    # Numbers and durations must not be turned into text.
+    assert sanitize_cell(42) == 42
+    assert sanitize_cell(1.5) == 1.5
+    assert sanitize_cell(None) is None
+    assert sanitize_cell(timedelta(minutes=90)) == timedelta(minutes=90)
+
+
+def test_hostile_employee_name_reaches_the_sheet_as_text(tmp_path):
+    hostile = '=cmd|\' /C calc\'!A0'
+    path = write_daily_attendance(
+        tmp_path / "x.xlsx", [record(name=hostile)], {}, meta(), False
+    )
+    ws = load_workbook(path).active
+    written = [
+        c.value for row in ws.iter_rows() for c in row
+        if isinstance(c.value, str) and "cmd" in c.value
+    ]
+    assert written, "the name should still appear in the report"
+    for value in written:
+        assert value.startswith("'")
+    # openpyxl must not have stored it as a formula cell.
+    formulas = [
+        c.value for row in ws.iter_rows() for c in row
+        if isinstance(c.value, str) and c.value.startswith("=")
+    ]
+    assert not formulas
+
+
+def test_hostile_name_in_an_employee_sheet_is_escaped(tmp_path):
+    hostile = "=1+1"
+    path = write_monthly_attendance(
+        tmp_path / "m.xlsx",
+        [record(name=hostile)],
+        {"emp1": {"employee_id": "=2+2"}},
+        meta("Monthly Attendance", "2026-11"),
+        False,
+    )
+    wb = load_workbook(path)
+    for ws in wb:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
+                    assert not cell.value.startswith("=")

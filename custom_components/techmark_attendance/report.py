@@ -39,6 +39,26 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 # as 06:00, silently losing a day.
 DURATION_FORMAT = "[h]:mm"
 
+# Leading characters that make Excel and LibreOffice treat a cell as a formula.
+FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def sanitize_cell(value: Any) -> Any:
+    """Neutralise spreadsheet formula injection in text cells.
+
+    Employee and visitor names come from the camera's face library, which is
+    written by whoever can reach the camera. A name such as
+    `=HYPERLINK("http://evil/","Payslip")` would execute when an HR user opens
+    the report, so a leading formula character is escaped with an apostrophe.
+    Excel shows the original text and treats it as a string.
+
+    Numbers, dates and durations are untouched: only `str` values can carry a
+    formula prefix.
+    """
+    if isinstance(value, str) and value.startswith(FORMULA_PREFIXES):
+        return f"'{value}"
+    return value
+
 SPAN_CAVEAT = (
     "Span on site = last sighting minus first sighting. It is NOT hours worked: "
     "a mid-day departure is not visible to the camera."
@@ -101,7 +121,7 @@ def _write_table(
 
     for offset, data in enumerate(rows, start=1):
         for col, value in enumerate(data, start=1):
-            cell = ws.cell(row=start_row + offset, column=col, value=value)
+            cell = ws.cell(row=start_row + offset, column=col, value=sanitize_cell(value))
             cell.border = BORDER
             cell.alignment = Alignment(vertical="center", wrap_text=False)
             if col in duration_columns:
@@ -337,10 +357,10 @@ def _employee_sheet(
                 leave_by_category[category] = leave_by_category.get(category, 0) + 1
 
     ws.cell(row=row, column=1, value="Employee").font = LABEL_FONT
-    ws.cell(row=row, column=2, value=name)
+    ws.cell(row=row, column=2, value=sanitize_cell(name))
     row += 1
     ws.cell(row=row, column=1, value="Employee ID").font = LABEL_FONT
-    ws.cell(row=row, column=2, value=str(employee.get("employee_id") or ""))
+    ws.cell(row=row, column=2, value=sanitize_cell(str(employee.get("employee_id") or "")))
     row += 2
 
     kpis: list[tuple[str, Any, str | None]] = [
