@@ -12,7 +12,7 @@ from typing import Final
 DOMAIN: Final = "techmark_attendance"
 DB_FILENAME: Final = "techmark_attendance.db"
 
-SCHEMA_VERSION: Final = 2
+SCHEMA_VERSION: Final = 3
 
 # --- config entry data ---
 CONF_HOST: Final = "host"

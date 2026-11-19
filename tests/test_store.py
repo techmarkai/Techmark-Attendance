@@ -48,7 +48,7 @@ def match(ts: datetime, pid: str, key="emp1", name="Yousef") -> FaceMatch:
         fdid="1",
         library="Employee",
         library_threshold=90,
-        person_key=key,
+        record_id=key,
         name=name,
         similarity=0.95,
         quality=58,

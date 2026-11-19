@@ -366,7 +366,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             return
 
-        key = employee_key(event.person_key, event.name)
+        key = employee_key(event.record_id, event.name)
         if not key:
             _LOGGER.debug("employee match without a usable identity key, skipped")
             return

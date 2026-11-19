@@ -127,6 +127,33 @@ MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE employees ADD COLUMN conflict TEXT;
         """,
     ),
+    (
+        3,
+        # Namespace the camera's library record id.
+        #
+        # Recognition events used to key on the matched record id with no
+        # prefix, while the roster keyed on `name:<name>`, so one employee had
+        # two identities and per-employee presence never resolved. Both paths
+        # now agree on `pid:<record id>` (see processor.employee_key).
+        #
+        # Rewrite the bare ids already recorded so real presence history moves
+        # to the new scheme instead of being orphaned. Only all-digit keys are
+        # touched: those can only have come from the old event path, because a
+        # `customHumanID` is empty on every record of this camera and a
+        # `name:`-prefixed key is not all digits. Nothing is deleted; the
+        # superseded `name:` rows are deactivated by the next authoritative
+        # roster refresh, which keeps their history readable.
+        """
+        UPDATE employees SET employee_key = 'pid:' || employee_key
+            WHERE employee_key GLOB '[0-9]*' AND NOT employee_key GLOB '*[^0-9]*';
+        UPDATE presence_days SET employee_key = 'pid:' || employee_key
+            WHERE employee_key GLOB '[0-9]*' AND NOT employee_key GLOB '*[^0-9]*';
+        UPDATE face_events SET employee_key = 'pid:' || employee_key
+            WHERE employee_key GLOB '[0-9]*' AND NOT employee_key GLOB '*[^0-9]*';
+        UPDATE hr_policy_snapshots SET employee_key = 'pid:' || employee_key
+            WHERE employee_key GLOB '[0-9]*' AND NOT employee_key GLOB '*[^0-9]*';
+        """,
+    ),
 ]
 
 # Tables retention is allowed to touch. Everything else is permanent.

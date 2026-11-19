@@ -33,7 +33,10 @@ class FaceMatch:
     fdid: str
     library: str
     library_threshold: int | None
-    person_key: str
+    # The matched library record's id, reported as `human_id` on the alert
+    # stream and as `PID` by FDSearch. Distinct from `pid` below, which is the
+    # capture event's own id used for deduplication. This is the identity.
+    record_id: str
     name: str
     similarity: float
     quality: int | None

@@ -381,3 +381,59 @@ def test_the_store_executor_has_exactly_one_worker() -> None:
     assert "run_in_executor(self._db_executor" in coordinator
     # The connection must be opened on that same thread, not during __init__.
     assert "await self.db(self.store.open)" in coordinator
+
+
+# --- one identity per employee --------------------------------------------
+
+
+def test_identity_is_derived_in_exactly_one_place() -> None:
+    """Both paths must route through `employee_key`.
+
+    The recognition path and the roster path each build an employee identity.
+    When they read different fields the same person gets two keys, presence
+    rows are written where nothing reads them, and per-employee attendance is
+    silently empty while the aggregate count rises. Keeping the derivation in
+    one function is what prevents that, so no module may assemble a key itself.
+    """
+    offenders: list[str] = []
+    for path in sorted(COMPONENT.glob("*.py")):
+        if path.name == "processor.py":  # where employee_key is defined
+            continue
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if "employee_key(" in line or line.lstrip().startswith("#"):
+                continue
+            # A migration remaps keys already on disk; it does not derive new
+            # ones. Narrow on purpose, so ordinary store code stays guarded.
+            if "UPDATE" in line and "|| employee_key" in line:
+                continue
+            # Hand-built namespace prefixes are the failure mode.
+            if '"name:' in line or "'name:" in line or '"pid:' in line or "'pid:" in line:
+                offenders.append(f"{path.name}:{number}: {line.strip()[:70]}")
+    assert not offenders, f"identity keys built outside employee_key: {offenders}"
+
+
+def test_the_record_id_is_not_read_as_the_operator_id() -> None:
+    """`human_id` and `customHumanID` are different namespaces.
+
+    The camera sends the matched library record as `human_id` (FDSearch calls
+    the same value `PID`) and the operator-set identifier as `customHumanID`,
+    which is empty on this camera. Collapsing them with an `or` is the exact
+    bug that split one employee into two identities.
+    """
+    stream = (COMPONENT / "stream.py").read_text(encoding="utf-8")
+    assert 'candidate.get("human_id") or candidate.get("customHumanID")' not in stream
+    assert 'candidate.get("customHumanID") or candidate.get("human_id")' not in stream
+    assert 'candidate.get("human_id")' in stream, "the record id must be read"
+
+    # A comparison result carries no customHumanID, so identity must not come
+    # from it anywhere: the roster would key on it and recognition could not.
+    processor = (COMPONENT / "processor.py").read_text(encoding="utf-8")
+    key_fn = processor[
+        processor.index("def employee_key") : processor.index("def passes_quality")
+    ]
+    # Skip the docstring, which legitimately explains both field names.
+    after_doc = key_fn.split('"""')[2] if key_fn.count('"""') >= 2 else key_fn
+    assert "customHumanID" not in after_doc
+    assert "human_id" not in after_doc

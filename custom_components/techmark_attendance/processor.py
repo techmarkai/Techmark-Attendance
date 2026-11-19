@@ -58,18 +58,27 @@ class EmployeeLibrary:
         return KIND_EMPLOYEE_MATCH if self.is_employee(match) else KIND_NON_EMPLOYEE
 
 
-def employee_key(person_key: str, name: str) -> str:
-    """Stable employee identity.
+def employee_key(record_id: str, name: str) -> str:
+    """Stable employee identity. Both code paths MUST call this.
 
-    `customHumanID` is preferred, but the live Employee record carries an empty
-    one, so the library name is the documented fallback. The `name:` prefix
-    keeps the two namespaces apart so one person cannot be counted under both
-    forms. A display-name change updates a label, never the identity, as long
-    as a `customHumanID` exists.
+    The identity is the camera's own library record id: `PID` as `FDSearch`
+    reports it, `human_id` as the alert stream reports it. Verified on the live
+    camera: an event carrying `human_id='1'` matched `PID 1`, Yousef.
+
+    `customHumanID` is deliberately NOT used, even though `FDSearch` returns
+    it. A face comparison result does not contain that field at all, so keying
+    on it would work for the roster and fail for every recognition - the same
+    employee would get two identities the moment an operator filled it in, and
+    per-employee presence would silently stop resolving. The record id is the
+    only identifier both paths actually carry.
+
+    The name is the last resort, for a record with no id. It is a weak key: a
+    rename reads as a different person. The `name:` prefix keeps the two
+    namespaces apart so nobody is ever counted under both forms.
     """
-    person_key = (person_key or "").strip()
-    if person_key:
-        return person_key
+    record_id = (record_id or "").strip()
+    if record_id:
+        return f"pid:{record_id}"
     name = (name or "").strip()
     return f"name:{name}" if name else ""
 
@@ -115,9 +124,9 @@ def resolve_roster(
 ) -> tuple[list[RosterEntry], list[RosterConflict]]:
     """Turn Employee Library records into a roster, reporting any conflict.
 
-    Identity comes from `customHumanID`, falling back to the library name
-    (prefixed, see `employee_key`). Two cases cannot be resolved and are
-    reported instead of guessed:
+    Identity comes from the camera record id, falling back to the library
+    name (prefixed, see `employee_key`). Two cases cannot be resolved and
+    are reported instead of guessed:
 
     * `no_identifier` - the record has neither an id nor a name, so it cannot
       be addressed at all and is left out of the roster.
@@ -132,7 +141,9 @@ def resolve_roster(
     for record in records:
         name = str(record.get("name") or "").strip()
         pid = str(record.get("pid") or "").strip()
-        key = employee_key(str(record.get("human_id") or ""), name)
+        # `pid` is the FDSearch record id, the same value the alert stream
+        # reports as `human_id`. Keying on it is what makes the two paths agree.
+        key = employee_key(pid, name)
 
         if not key:
             conflicts.append(

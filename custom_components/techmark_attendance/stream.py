@@ -269,8 +269,11 @@ def _from_json(body: bytes, received: datetime) -> Event | None:
     reserve = candidate.get("reserve_field") or {}
     name = str(reserve.get("name") or "").strip()
     # The identity key itself is derived later (processor.employee_key), which
-    # keeps the decoder free of business rules. Both raw forms are passed on.
-    person_key = str(candidate.get("human_id") or candidate.get("customHumanID") or "")
+    # keeps the decoder free of business rules. `human_id` is the matched
+    # library record, the same value FDSearch returns as `PID`. A comparison
+    # result carries no `customHumanID`, which is why identity cannot be based
+    # on that field: see employee_key.
+    record_id = str(candidate.get("human_id") or "")
     similarity = candidate.get("similarity")
     return FaceMatch(
         received=received,
@@ -278,7 +281,7 @@ def _from_json(body: bytes, received: datetime) -> Event | None:
         fdid=str(candidate.get("blacklist_id") or ""),
         library=str(candidate.get("FDLibName") or ""),
         library_threshold=_as_int(candidate.get("FDLibThreshold")),
-        person_key=person_key,
+        record_id=record_id,
         name=name,
         similarity=float(similarity) if isinstance(similarity, (int, float)) else 0.0,
         quality=quality,

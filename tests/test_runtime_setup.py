@@ -32,6 +32,7 @@ from unittest.mock import patch
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.techmark_attendance.const import (
@@ -39,6 +40,7 @@ from custom_components.techmark_attendance.const import (
     ROSTER_COMPLETE,
     ROSTER_INCOMPLETE,
 )
+from custom_components.techmark_attendance.models import FaceMatch
 
 ENTRY_DATA = {
     CONF_HOST: "camera.invalid",
@@ -56,9 +58,10 @@ DEVICE_INFO = {
 
 LIBRARIES = [{"fdid": "1", "name": "Employee", "threshold": 75}]
 
+# Shaped like the live camera: customHumanID is empty on every record.
 RECORDS = [
-    {"pid": "1", "name": "Yousef", "human_id": "E-001"},
-    {"pid": "2", "name": "Hamza", "human_id": "E-002"},
+    {"pid": "1", "name": "Yousef", "human_id": ""},
+    {"pid": "2", "name": "Hamza", "human_id": ""},
 ]
 
 
@@ -270,3 +273,60 @@ async def test_an_unreachable_camera_retries_rather_than_failing(
 
     entry, _ = await setup_integration(hass, Offline())
     assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+# --- a recognition must reach the employee's own sensor ------------------
+
+
+async def test_a_recognition_reaches_that_employees_sensor(
+    hass: HomeAssistant,
+) -> None:
+    """The identity bug, caught where it actually hurt.
+
+    On the live camera the aggregate count rose to 1 with `names: ["Yousef"]`
+    while Yousef's own sensor stayed at `no_recognition`, because recognition
+    keyed on the library record id and the roster keyed on the display name.
+    Reports read the per-employee rows, so they would have shown every
+    employee absent forever.
+
+    The payload below carries the fields exactly as the camera sends them:
+    `human_id` is the record id and `customHumanID` is absent.
+    """
+    entry, _ = await setup_integration(hass)
+    coordinator = entry.runtime_data
+
+    match = FaceMatch(
+        received=dt_util.now(),
+        camera_time=dt_util.now(),
+        fdid="1",
+        library="Employee",
+        library_threshold=90,
+        record_id="1",  # human_id: Yousef's library record
+        name="Yousef",
+        similarity=0.95,
+        quality=37,  # a real correct match scored this; must not be gated
+        stay_ms=5000,
+        pid="2026111910575883700EvvY3zCzHK2DG",
+    )
+    await coordinator._handle_match(match)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    sensor = next(
+        s
+        for s in hass.states.async_all()
+        if s.entity_id.endswith("_yousef")
+    )
+    assert sensor.state != "no_recognition", (
+        "the employee's own sensor did not see the recognition: the roster key "
+        "and the recognition key have diverged again"
+    )
+    assert sensor.attributes["recognitions"] == 1
+    assert sensor.attributes["first_seen"]
+
+    aggregate = next(
+        s for s in hass.states.async_all() if "employees_recognised" in s.entity_id
+    )
+    assert aggregate.state == "1"
+    # The two must agree; disagreement is the signature of the bug.
+    assert "Yousef" in aggregate.attributes["names"]

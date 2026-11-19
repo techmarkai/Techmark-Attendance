@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.3.0 - 2026-11-19
+
+### Fixed
+
+- **One employee could have two identities, so per-employee attendance never
+  resolved.** Recognition keyed on the matched library record (`human_id` in a
+  face comparison result) while the roster keyed on the display name, because
+  `customHumanID` is empty on every record of this camera. Presence rows were
+  written under a key the sensors and every report row never read. Observed
+  live: `employees_recognised_today` rose to 1 with `names: ["Yousef"]` while
+  Yousef's own sensor stayed at `no_recognition`. Reports would have shown all
+  six employees absent indefinitely while the summary said otherwise.
+
+  Identity is now the camera's own library record id for both paths:
+  `pid:<record id>`, where the record id is `PID` from `FDSearch` and
+  `human_id` on the alert stream. Verified on the live camera that these are
+  the same value (`human_id='1'` matched `PID 1`).
+
+- `customHumanID` is deliberately **not** used for identity even though
+  `FDSearch` returns it, because a face comparison result does not contain
+  that field at all. Keying on it worked for the roster and could never work
+  for recognition, so filling it in on the camera would have re-split every
+  employee.
+
+### Changed
+
+- Schema v3 renames bare record-id keys to `pid:<id>` across `employees`,
+  `presence_days`, `face_events` and `hr_policy_snapshots`, so presence
+  recorded before this release moves to the new scheme instead of being
+  orphaned. Nothing is deleted; superseded `name:` rows are deactivated by the
+  next authoritative roster refresh and stay readable.
+- `FaceMatch.person_key` is removed and replaced by `record_id`. The decoder no
+  longer reads `customHumanID`.
+
+### Improved, as a consequence
+
+- **Renaming an employee in the camera no longer creates a second employee.**
+  This was previously a documented limitation.
+- **Two employees who share a display name are now two employees.** Before,
+  the second was reported as a duplicate identity and dropped from the roster
+  entirely - an invisible employee.
+- **An enrolled face with no name is now tracked** by its record id instead of
+  being excluded.
+
+### Added
+
+- Runtime test asserting a recognition reaches that employee's own sensor and
+  that the per-employee and aggregate sensors agree - disagreement was the
+  exact signature of this bug.
+- Guard tests: no module may assemble an identity key itself, and
+  `employee_key` may not reference `customHumanID` or `human_id` in its body.
+- Regression tests for the migration, including that operator-set identifiers
+  are left alone by the key remap.
+
+### Note on the diagnosis
+
+Two earlier hypotheses were wrong and are recorded so they are not retried.
+The library threshold of 90 is not too strict: an observed genuine match scored
+0.95. The quality gate is not discarding matches: it applies only to unmatched
+faces, which matters because a correct match was observed with a face quality
+score of 37.
+
 ## 0.2.2 - 2026-11-19
 
 ### Fixed

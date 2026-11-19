@@ -48,7 +48,21 @@ VIDEOLOSS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 VMD_XML = VIDEOLOSS_XML.replace("videoloss", "VMD")
 
 
-def _match_payload(name="Nedal", human_id="TMV-21f6d93e-000010", fdid="2", library="Customers"):
+def _match_payload(
+    name="Nedal",
+    human_id="7",
+    fdid="2",
+    library="Customers",
+    custom_human_id="",
+):
+    """A face comparison result shaped like the live camera's.
+
+    `human_id` is the matched library record (FDSearch's PID) and
+    `customHumanID` is the operator-set id, which is EMPTY on this camera.
+    An earlier version of this fixture set both to the same value, which is
+    exactly why it never caught the identity bug: the two paths only
+    disagree when the fields differ, as they do in reality.
+    """
     return {
         "dateTime": "2026-11-18T17:42:16+03:00",
         "eventType": "alarmResult",
@@ -69,7 +83,7 @@ def _match_payload(name="Nedal", human_id="TMV-21f6d93e-000010", fdid="2", libra
                                     {
                                         "blacklist_id": fdid,
                                         "human_id": human_id,
-                                        "customHumanID": human_id,
+                                        "customHumanID": custom_human_id,
                                         "similarity": 0.95,
                                         "FDLibName": library,
                                         "FDLibThreshold": 80,
@@ -208,7 +222,7 @@ def test_match_carries_identity_and_library():
     event = to_event(part, NOW)
     assert isinstance(event, FaceMatch)
     assert event.name == "Nedal"
-    assert event.person_key == "TMV-21f6d93e-000010"
+    assert event.record_id == "7"  # the matched library record
     assert event.fdid == "2"
     assert event.library == "Customers"
     assert event.similarity == 0.95
@@ -237,18 +251,20 @@ def test_employee_with_empty_human_id_still_produces_a_match():
     )[0]
     event = to_event(part, NOW)
     assert isinstance(event, FaceMatch)
-    assert event.person_key == ""
+    assert event.record_id == ""
     assert event.name == "Yousef"
-    # The identity key is derived from the pair, not from the raw field.
-    assert employee_key(event.person_key, event.name) == "name:Yousef"
+    # With no record id, the name is the documented last resort.
+    assert employee_key(event.record_id, event.name) == "name:Yousef"
 
 
 def test_identity_namespaces_cannot_collide():
-    assert employee_key("TMV-1", "Nedal") == "TMV-1"
-    assert employee_key("", "Nedal") == "name:Nedal"
+    assert employee_key("9", "Nedal") == "pid:9"  # the record id wins
+    assert employee_key("", "Nedal") == "name:Nedal"  # then the name
     assert employee_key("", "") == ""
-    # A stable id always wins, so a renamed person keeps one identity.
-    assert employee_key("TMV-1", "Nedal") == employee_key("TMV-1", "Renamed")
+    # The record id wins, so a renamed person keeps one identity.
+    assert employee_key("9", "Nedal") == employee_key("9", "Renamed")
+    # The prefixes keep the namespaces apart.
+    assert employee_key("9", "") != employee_key("", "9")
 
 
 def test_match_without_candidate_is_dropped():
