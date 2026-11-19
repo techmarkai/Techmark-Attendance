@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.2 - 2026-11-19
+
+### Fixed
+
+- `TechmarkCoordinator.async_shutdown` was not idempotent. When setup fails,
+  `async_setup_entry` calls it before raising `ConfigEntryNotReady`, and Home
+  Assistant then runs the entry's on-unload callbacks, which call it again. The
+  second call raised `RuntimeError: cannot schedule new futures after shutdown`
+  from the already-retired store executor. Found by the new runtime tests.
+
+### Added
+
+- Home Assistant runtime test coverage (18 tests), the Phase 6 gate. These
+  drive a real `hass` and execute `__init__`, `coordinator`, `config_flow`,
+  `sensor`, `binary_sensor` and `diagnostics`, which until now were only read
+  as source text by the guard tests. Setup, unload, roster seeding, both
+  failure paths (reauth vs retry) and the whole config flow are covered.
+- `docs/TESTING.md`, including why a passing setup test does not prove thread
+  safety and which test actually catches the sqlite3 threading bug.
+
+### Changed
+
+- `asyncio_mode = "auto"` in `pyproject.toml`; the Home Assistant test harness
+  uses async autouse fixtures that pytest-asyncio's strict mode cannot resolve.
+- `tests/conftest.py` only installs the import stub when Home Assistant is
+  absent. With it installed, the real package must be importable or Home
+  Assistant's loader cannot find `async_setup_entry`.
+
+### Note
+
+The runtime suite requires Linux and Python 3.14, so it cannot run on Windows
+(`homeassistant/runner.py` imports `fcntl`). It skips itself when the harness
+is missing. It was verified against Core 2026.10.4 on Python 3.14.10; the
+harness trails the 2026.11.2 release running in production.
+
 ## 0.2.1 - 2026-11-19
 
 ### Fixed

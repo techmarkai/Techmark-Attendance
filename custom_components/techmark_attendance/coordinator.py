@@ -89,6 +89,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._db_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix=f"{DOMAIN}_db"
         )
+        self._shutdown = False
 
     # --- lifecycle ---
 
@@ -246,6 +247,17 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
     async def async_shutdown(self) -> None:
+        """Stop the stream and close the store. Safe to call more than once.
+
+        It genuinely is called more than once: when setup fails,
+        `async_setup_entry` calls this before raising ConfigEntryNotReady, and
+        Home Assistant then runs the entry's on-unload callbacks, which call it
+        again. Without this guard the second call raises `cannot schedule new
+        futures after shutdown` from the retired executor.
+        """
+        if self._shutdown:
+            return
+        self._shutdown = True
         if self._stream_task is not None:
             self._stream_task.cancel()
             try:
