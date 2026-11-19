@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.1 - 2026-11-19
+
+### Fixed
+
+- **A partly classified hour voided the whole day's unique-people figure.** A
+  demographic category total that was *lower* than `enter - duplicates` was
+  treated as internal inconsistency, so the bucket became `invalid` and the
+  daily total refused to report a number. Observed live at 10:00 on
+  2026-11-19: enter 31, duplicates 25, so six people were counted, while all
+  four attribute categories agreed on five - one face the camera counted but
+  could not classify. That is routine with real foot traffic, so
+  `camera_unique_people_today` would have read `unknown` on nearly every real
+  day.
+
+  A category total *above* the subtraction is still invalid, because a
+  category cannot classify more people than were counted. A total below it is
+  now reported as demographic coverage: the count is known, the breakdown
+  covers part of it.
+
+### Note on an earlier assumption
+
+The four attribute categories were previously observed to each equal
+`enter - duplicates` exactly, which was the original corroboration for the
+unique-people formula. Today's data shows they can fall short by the number of
+unclassified faces, so they agree with each other but are a subset of the
+count, not a second independent measure of it. The formula itself is unchanged.
+
 ## 0.3.0 - 2026-11-19
 
 ### Fixed

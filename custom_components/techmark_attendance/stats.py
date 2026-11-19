@@ -58,12 +58,21 @@ def evaluate_bucket(
             period, bucket_start, enter, exit_, duplicate_people, None, INVALID, demographics
         )
 
-    # Each demographic category is counted once per deduplicated person, so a
-    # category that disagrees with the subtraction means the bucket is not
-    # internally consistent and must not yield a derived figure.
+    # A demographic category classifies at most one person per deduplicated
+    # person, so a category total ABOVE the subtraction is impossible and the
+    # bucket cannot yield a derived figure.
+    #
+    # A total BELOW it is normal, not a fault: the camera counted a person
+    # whose face it could not classify. Observed live on 2026-11-19 at 10:00 -
+    # enter 31, duplicates 25, derived 6, while all four categories agreed on
+    # 5. Treating that as invalid voided the whole day's unique figure, and
+    # since at least one unclassified face a day is routine, the sensor would
+    # have read `unknown` on nearly every real day. The shortfall is reported
+    # as demographic coverage instead (see `classified_total`), which is the
+    # honest reading: the count is known, the breakdown covers part of it.
     for category in (CATEGORY_GENDER, CATEGORY_AGE, CATEGORY_MASK, CATEGORY_GLASS):
         values = demographics.get(category)
-        if values and sum(values.values()) != derived:
+        if values and sum(values.values()) > derived:
             return CountingBucket(
                 period, bucket_start, enter, exit_, duplicate_people, None, INVALID, demographics
             )

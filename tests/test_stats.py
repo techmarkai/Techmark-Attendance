@@ -65,18 +65,49 @@ def test_negative_subtraction_is_invalid_and_never_clamped():
     assert bucket.enter == 5 and bucket.duplicate_people == 9
 
 
-def test_demographics_disagreeing_with_the_subtraction_is_invalid():
-    """Internal inconsistency must not produce a derived figure."""
+def test_more_classified_than_counted_is_invalid():
+    """Impossible data must not produce a derived figure.
+
+    A category cannot classify more people than were counted, so 7 against a
+    subtraction of 4 means the bucket is not internally consistent.
+    """
     bucket = evaluate_bucket("hour", "2026-11-18T16:00:00", 41, 42, 37, demo(7))
     assert bucket.validity == "invalid"
     assert bucket.unique_people is None
 
 
-def test_one_disagreeing_category_is_enough_to_invalidate():
+def test_one_category_above_the_subtraction_is_enough_to_invalidate():
     mixed = demo(4)
-    mixed["glass"] = {"no": 3}
+    mixed["glass"] = {"no": 5}
     bucket = evaluate_bucket("hour", "2026-11-18T16:00:00", 41, 42, 37, mixed)
     assert bucket.validity == "invalid"
+
+
+def test_fewer_classified_than_counted_is_valid_not_invalid():
+    """A face the camera could not classify is routine, not a fault.
+
+    Observed live on 2026-11-19 at 10:00: enter 31, duplicates 25, so six
+    people were counted, while all four attribute categories agreed on five.
+    While that invalidated the bucket, one unclassified face voided the whole
+    day's unique figure - and with real foot traffic that happens most days,
+    so the sensor would have read `unknown` nearly always.
+
+    The count is known; the breakdown simply covers part of it.
+    """
+    partial = demo(5)
+    bucket = evaluate_bucket("hour", "2026-11-19T10:00:00", 31, 40, 25, partial)
+    assert bucket.validity == "valid"
+    assert bucket.unique_people == 6, "the count stands on enter - duplicates"
+    assert classified_total(bucket.demographics) == 5, "coverage is reported, not guessed"
+
+
+def test_a_partly_classified_bucket_does_not_void_the_day():
+    """The regression that matters: one hour must not void the whole total."""
+    good = evaluate_bucket("hour", "2026-11-19T09:00:00", 19, 16, 14, demo(5))
+    partial = evaluate_bucket("hour", "2026-11-19T10:00:00", 31, 40, 25, demo(5))
+    totals = sum_buckets([good, partial])
+    assert totals["validity"] == "valid"
+    assert totals["unique_people"] == 11  # 5 + 6
 
 
 def test_missing_counters_are_unavailable_not_zero():
