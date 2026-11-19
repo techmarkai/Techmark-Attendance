@@ -139,7 +139,7 @@ def async_register_services(hass: HomeAssistant) -> None:
                 _meta(coordinator, "Camera Statistics", day.isoformat()),
             )
 
-        await hass.async_add_executor_job(
+        await coordinator.db(
             coordinator.store.add_audit,
             call.context.user_id or "system",
             f"generate_report:{kind}",
@@ -166,7 +166,7 @@ def async_register_services(hass: HomeAssistant) -> None:
             path.write_text(text, encoding="utf-8-sig")
 
         await hass.async_add_executor_job(_write)
-        await hass.async_add_executor_job(
+        await coordinator.db(
             coordinator.store.add_audit,
             call.context.user_id or "system",
             "export_presence",
@@ -189,7 +189,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         if end < start:
             raise HomeAssistantError("end is before start")
         records = await coordinator.async_presence_range(start, end)
-        await hass.async_add_executor_job(
+        await coordinator.db(
             coordinator.store.add_audit,
             call.context.user_id or "system",
             "recalculate",

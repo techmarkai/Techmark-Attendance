@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as Date
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -77,8 +79,27 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.roster_state: str = ROSTER_UNAVAILABLE
         self.roster_conflicts: list[Any] = []
         self._roster_refreshed: datetime | None = None
+        # One thread owns the SQLite connection, for two reasons. sqlite3
+        # refuses a connection used from a thread other than the one that
+        # created it, and Home Assistant's shared executor hands each job to
+        # an arbitrary pool thread. Funnelling every store call through a
+        # single worker also serialises the read-then-write methods
+        # (seed_employees, add_face_event's changes() gate), which a pool
+        # would otherwise interleave.
+        self._db_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=f"{DOMAIN}_db"
+        )
 
     # --- lifecycle ---
+
+    async def db(self, func: Callable[..., Any], *args: Any) -> Any:
+        """Run one store call on the thread that owns the connection.
+
+        Every store access goes through here. Using
+        `hass.async_add_executor_job` for a store call is a bug: it picks an
+        arbitrary pool thread and sqlite3 raises ProgrammingError.
+        """
+        return await self.hass.loop.run_in_executor(self._db_executor, func, *args)
 
     @property
     def tz(self) -> ZoneInfo:
@@ -94,7 +115,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return value if isinstance(value, dict) else {}
 
     async def async_prepare(self) -> None:
-        await self.hass.async_add_executor_job(self.store.open)
+        await self.db(self.store.open)
         self.device_info_raw = await self.client.device_info()
         libraries = await self.client.libraries()
         self.employee_library = EmployeeLibrary.from_libraries(libraries)
@@ -111,7 +132,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _purge(self) -> None:
         days = int(self.options.get(OPT_RETENTION_DAYS, DEFAULT_RETENTION_DAYS) or DEFAULT_RETENTION_DAYS)
         cutoff = dt_util.now() - timedelta(days=max(1, days))
-        removed = await self.hass.async_add_executor_job(self.store.purge_transient, cutoff)
+        removed = await self.db(self.store.purge_transient, cutoff)
         if any(removed.values()):
             _LOGGER.debug("retention removed %s", removed)
 
@@ -121,19 +142,19 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Nothing about an existing record is recalculated or rewritten; only the
         missing snapshot is added, and it is never presented as verified fact.
         """
-        dates = await self.hass.async_add_executor_job(self.store.dates_without_snapshot)
+        dates = await self.db(self.store.dates_without_snapshot)
         if not dates:
             return
         payload, digest = canonical_policy(self.options)
         now = dt_util.now()
         written = 0
         for day in dates:
-            if await self.hass.async_add_executor_job(
+            if await self.db(
                 self.store.put_snapshot, day, payload, digest, "inferred", now, ""
             ):
                 written += 1
         if written:
-            await self.hass.async_add_executor_job(
+            await self.db(
                 self.store.add_audit,
                 "system",
                 "backfill_policy_snapshots",
@@ -152,7 +173,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         fdid = self.employee_library.fdid
         if not fdid:
-            await self.hass.async_add_executor_job(
+            await self.db(
                 self.store.set_roster_state, ROSTER_UNAVAILABLE, None
             )
             self.roster_state = ROSTER_UNAVAILABLE
@@ -162,7 +183,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             records, complete = await self.client.library_records(fdid)
         except CameraError as err:
             _LOGGER.warning("could not read the Employee Library: %s", err)
-            await self.hass.async_add_executor_job(
+            await self.db(
                 self.store.set_roster_state, ROSTER_UNAVAILABLE, None
             )
             self.roster_state = ROSTER_UNAVAILABLE
@@ -179,12 +200,12 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         now = dt_util.now()
         state = ROSTER_COMPLETE if complete else ROSTER_INCOMPLETE
-        result = await self.hass.async_add_executor_job(
+        result = await self.db(
             lambda: self.store.seed_employees(
                 entries, conflicts, now, authoritative=complete
             )
         )
-        await self.hass.async_add_executor_job(
+        await self.db(
             self.store.set_roster_state, state, now
         )
         self.roster_state = state
@@ -234,7 +255,10 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception as err:  # noqa: BLE001 - shutdown must not raise
                 _LOGGER.debug("stream task ended with %s", err)
             self._stream_task = None
-        await self.hass.async_add_executor_job(self.store.close)
+        # Close on the owning thread, then retire it. wait=False so a shutdown
+        # triggered from the event loop never blocks it.
+        await self.db(self.store.close)
+        self._db_executor.shutdown(wait=False)
 
     # --- event stream ---
 
@@ -285,13 +309,13 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_bytes = dt_util.now()
         if not self.stream_connected:
             self.stream_connected = True
-            await self.hass.async_add_executor_job(self.store.close_gap, dt_util.now())
+            await self.db(self.store.close_gap, dt_util.now())
             self.async_update_listeners()
 
     async def _mark_disconnected(self, cause: str) -> None:
         if self.stream_connected or cause == "auth":
             self.stream_connected = False
-            await self.hass.async_add_executor_job(self.store.open_gap, dt_util.now(), cause)
+            await self.db(self.store.open_gap, dt_util.now(), cause)
             self.async_update_listeners()
 
     async def _handle_part(self, part: Any) -> None:
@@ -322,7 +346,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 max_similarity=event.similarity,
                 pid=event.pid,
             )
-            await self.hass.async_add_executor_job(
+            await self.db(
                 self.store.add_non_employee_event,
                 anon,
                 event.received.astimezone(self.tz).date().isoformat(),
@@ -336,7 +360,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         day = event.received.astimezone(self.tz).date()
-        inserted = await self.hass.async_add_executor_job(
+        inserted = await self.db(
             self.store.ingest_employee_match, event, key, day.isoformat(), "recognised"
         )
         if not inserted:
@@ -353,7 +377,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _handle_unmatched(self, event: FaceUnmatched) -> None:
         minimum = int(self.options.get(OPT_MIN_FACE_QUALITY, DEFAULT_MIN_FACE_QUALITY) or 0)
         kind = KIND_NON_EMPLOYEE if passes_quality(event.quality, minimum) else KIND_LOW_QUALITY
-        await self.hass.async_add_executor_job(
+        await self.db(
             self.store.add_non_employee_event,
             event,
             event.received.astimezone(self.tz).date().isoformat(),
@@ -364,13 +388,13 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         method = "timeRange" if isinstance(event, CounterWindow) else "realTime"
         previous = None
         if method == "realTime":
-            row = await self.hass.async_add_executor_job(self.store.last_counter)
+            row = await self.db(self.store.last_counter)
             if row is not None:
                 previous = (int(row["enter"]), int(row["exit"]), int(row["dedup"]))
         deltas, reset = counter_deltas(
             previous, (event.enter, event.exit, event.duplicate_people)
         )
-        await self.hass.async_add_executor_job(self.store.add_counter, event, deltas, method)
+        await self.db(self.store.add_counter, event, deltas, method)
         if reset:
             _LOGGER.debug("counter reset detected (daily reset or camera reboot)")
 
@@ -387,7 +411,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _capture_snapshot(self, day: Date) -> None:
         """Capture the policy for a date the first time it is processed."""
         payload, digest = canonical_policy(self.options)
-        await self.hass.async_add_executor_job(
+        await self.db(
             self.store.put_snapshot, day.isoformat(), payload, digest, "captured", dt_util.now(), ""
         )
 
@@ -399,7 +423,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         import json
 
-        row = await self.hass.async_add_executor_job(self.store.get_snapshot, day.isoformat(), "")
+        row = await self.db(self.store.get_snapshot, day.isoformat(), "")
         if row is None:
             return self.options, None
         try:
@@ -413,7 +437,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         record = await self.async_presence_for(day, key)
         if record is None:
             return
-        await self.hass.async_add_executor_job(
+        await self.db(
             self.store.set_presence_status,
             day.isoformat(),
             key,
@@ -423,7 +447,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def async_presence_for(self, day: Date, key: str) -> PresenceDay | None:
-        rows = await self.hass.async_add_executor_job(self.store.presence_for_day, day.isoformat())
+        rows = await self.db(self.store.presence_for_day, day.isoformat())
         row = next((r for r in rows if r["employee_key"] == key), None)
         if row is None:
             return None
@@ -435,7 +459,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         calendar = resolve_calendar(options, employee, day)
         times = [
             datetime.fromisoformat(ts)
-            for ts in await self.hass.async_add_executor_job(
+            for ts in await self.db(
                 self.store.recognition_times, day.isoformat(), row["employee_key"]
             )
         ]
@@ -447,7 +471,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if row["last_seen"] and int(row["recognitions"] or 0) >= 2:
                 times.append(datetime.fromisoformat(row["last_seen"]))
         start = datetime.combine(day, datetime.min.time(), tzinfo=self.tz)
-        gaps = await self.hass.async_add_executor_job(
+        gaps = await self.db(
             self.store.gaps_overlapping, start, start + timedelta(days=1)
         )
         return classify(
@@ -466,16 +490,16 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Employees with no recognition that day are included so the calendar
         statuses still appear, but no absence verdict is produced.
         """
-        rows = await self.hass.async_add_executor_job(self.store.presence_for_day, day.isoformat())
+        rows = await self.db(self.store.presence_for_day, day.isoformat())
         seen = {row["employee_key"]: row for row in rows}
         out: list[PresenceDay] = []
         for row in rows:
             out.append(await self._classify_row(day, row))
 
         options, digest = await self._policy_for(day)
-        known = await self.hass.async_add_executor_job(self.store.active_employees)
+        known = await self.db(self.store.active_employees)
         start = datetime.combine(day, datetime.min.time(), tzinfo=self.tz)
-        gaps = await self.hass.async_add_executor_job(
+        gaps = await self.db(
             self.store.gaps_overlapping, start, start + timedelta(days=1)
         )
         for emp in known:
@@ -525,7 +549,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Store the camera's authoritative hourly buckets for a day."""
         raw = await self.client.counting_statistics(day)
         start = datetime.combine(day, datetime.min.time(), tzinfo=self.tz)
-        gaps = await self.hass.async_add_executor_job(
+        gaps = await self.db(
             self.store.gaps_overlapping, start, start + timedelta(days=1)
         )
         now = dt_util.now()
@@ -543,18 +567,18 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 {k: item.get(k) or {} for k in ("gender", "age", "mask", "glass")},
                 gap_overlaps=bool(gaps),
             )
-            await self.hass.async_add_executor_job(self.store.upsert_bucket, bucket, now)
+            await self.db(self.store.upsert_bucket, bucket, now)
             buckets.append(bucket)
         return buckets
 
     async def async_counting_totals(self, first: Date, last: Date) -> dict[str, Any]:
-        rows = await self.hass.async_add_executor_job(
+        rows = await self.db(
             self.store.buckets_between,
             "hour",
             datetime.combine(first, datetime.min.time(), tzinfo=self.tz).isoformat(),
             datetime.combine(last, datetime.max.time(), tzinfo=self.tz).isoformat(),
         )
-        demo_rows = await self.hass.async_add_executor_job(
+        demo_rows = await self.db(
             self.store.demographics_between,
             "hour",
             datetime.combine(first, datetime.min.time(), tzinfo=self.tz).isoformat(),
@@ -593,7 +617,7 @@ class TechmarkCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "recognised_names": sorted(r.display_name for r in recognised),
             "today": await self.async_counting_totals(day, day),
             "month": await self.async_counting_totals(first, last),
-            "non_employee_events": await self.hass.async_add_executor_job(
+            "non_employee_events": await self.db(
                 self.store.count_events, day.isoformat(), KIND_NON_EMPLOYEE
             ),
             "roster_state": self.roster_state,

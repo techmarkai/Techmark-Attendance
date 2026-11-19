@@ -9,6 +9,7 @@ with, not quietly satisfied.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -337,3 +338,46 @@ def test_failed_clock_read_is_unavailable_not_zero() -> None:
     ]
     assert "self.clock_skew_seconds = None" in block
     assert "self.clock_skew_seconds = 0" not in block
+
+
+# --- the SQLite connection has one owning thread ---------------------------
+
+
+def test_no_store_call_uses_the_shared_executor() -> None:
+    """A store call on `hass.async_add_executor_job` is a crash, not a style nit.
+
+    sqlite3 refuses a connection used from a thread other than its creator,
+    and the shared executor picks an arbitrary pool thread. Store work must go
+    through `coordinator.db`, which owns a single worker. Plain file IO
+    (writing a report, deleting the database file) may still use the pool.
+    """
+    offenders: list[str] = []
+    for path in sorted(COMPONENT.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "async_add_executor_job"
+            ):
+                continue
+            # Only this call's own arguments count. A neighbouring line is not
+            # part of it, and a window-based check misreads file IO that
+            # happens to sit next to a store call.
+            args = " ".join(ast.unparse(arg) for arg in node.args)
+            if ".store." in args or args.startswith("store."):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, (
+        "these store calls run on the shared thread pool and will raise "
+        f"sqlite3.ProgrammingError: {offenders}"
+    )
+
+
+def test_the_store_executor_has_exactly_one_worker() -> None:
+    coordinator = (COMPONENT / "coordinator.py").read_text(encoding="utf-8")
+    assert "max_workers=1" in coordinator, "a pool of >1 reintroduces the bug"
+    assert "run_in_executor(self._db_executor" in coordinator
+    # The connection must be opened on that same thread, not during __init__.
+    assert "await self.db(self.store.open)" in coordinator

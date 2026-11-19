@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.1 - 2026-11-19
+
+### Fixed
+
+- **Setup failed on first install** with `sqlite3.ProgrammingError: SQLite
+  objects created in a thread can only be used in that same thread`. Store
+  calls were dispatched with `hass.async_add_executor_job`, which hands each
+  job to an arbitrary thread of Home Assistant's shared pool, while sqlite3
+  binds a connection to its creating thread. All store access now goes through
+  `TechmarkCoordinator.db`, backed by a single-worker executor, which also
+  serialises the read-then-write store methods. Plain file IO (report writing,
+  database removal) still uses the shared pool.
+- `async_shutdown` raised the same error while closing the connection, so a
+  failed setup left the database handle open.
+
+### Added
+
+- Two guard tests: one walks the AST of every module and fails if a store call
+  is dispatched on the shared executor, one asserts the store executor has
+  exactly one worker and that the connection is opened on it.
+
 ## 0.2.0 — 2026-11-19
 
 Rewritten to the final business model in `docs/specs/2026-11-18-architecture-plan.md`

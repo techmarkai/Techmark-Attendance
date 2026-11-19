@@ -34,7 +34,7 @@ async def async_get_config_entry_diagnostics(
     return {
         "entry": async_redact_data(dict(entry.data), REDACT),
         "device": async_redact_data(coordinator.device_info_raw, REDACT),
-        "schema_version": await hass.async_add_executor_job(
+        "schema_version": await coordinator.db(
             lambda: coordinator.store.version
         ),
         "employee_library_configured": coordinator.employee_library.fdid is not None,

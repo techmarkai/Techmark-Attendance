@@ -64,7 +64,7 @@ async def async_setup_entry(
         NonEmployeeEventsSensor(coordinator),
     ]
 
-    known = await hass.async_add_executor_job(coordinator.store.active_employees)
+    known = await coordinator.db(coordinator.store.active_employees)
     roster = {row["employee_key"]: row["display_name"] or row["employee_key"] for row in known}
     for key, data in coordinator.configured_employees.items():
         roster.setdefault(key, str(data.get("name") or key))
