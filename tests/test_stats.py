@@ -250,3 +250,26 @@ def test_recognition_rate_is_none_without_working_days():
 
 def test_recognition_rate_is_a_plain_share():
     assert recognition_rate(18, 20) == 90.0
+
+
+# --- totals carry the classified count ------------------------------------
+
+
+def test_totals_report_the_classified_count():
+    """Exports print this beside unique_people.
+
+    It was missing from the totals, so the exported TOTAL row left the
+    Classified column blank while every per-hour row above it was filled in -
+    found by reading an actual exported workbook, not by a failing test.
+    """
+    a = evaluate_bucket("hour", "2026-11-19T09:00:00", 19, 16, 14, demo(5))
+    b = evaluate_bucket("hour", "2026-11-19T10:00:00", 31, 40, 25, demo(5))
+    totals = sum_buckets([a, b])
+    assert totals["classified"] == 10
+    assert totals["unique_people"] == 11, "coverage is not the count"
+
+
+def test_totals_classified_is_none_when_the_camera_classified_nothing():
+    """None means unknown, which is not the same as nobody classified."""
+    bucket = evaluate_bucket("hour", "2026-11-19T03:00:00", 4, 4, 1, {})
+    assert sum_buckets([bucket])["classified"] is None

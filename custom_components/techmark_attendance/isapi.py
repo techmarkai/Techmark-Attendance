@@ -234,6 +234,10 @@ class HikClient:
             ("GenderList", "Gender", "gender"),
             ("AgeGroupList", "AgeGroup", "age"),
             ("MaskList", "Mask", "mask"),
+            # The camera returns this too (observed: yes / sunglasses / no).
+            # It was missing here, so the report's Glass section could never
+            # populate and the glass consistency check never ran.
+            ("GlassList", "Glass", "glass"),
         ):
             values: dict[str, int] = {}
             for container in node.iter():

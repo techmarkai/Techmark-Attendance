@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.2 - 2026-11-19
+
+### Fixed
+
+- **The glasses breakdown was never captured.** The camera returns a
+  `GlassList` alongside gender, age and mask, but the bucket parser read only
+  the other three. The exported report's Glass section therefore always read
+  "no classification data", and the glass consistency check in
+  `evaluate_bucket` never ran against real data. Today's export now shows
+  no 10, yes 3, sunglasses 1.
+- **The exported TOTAL row left the Classified column blank** while every
+  per-hour row above it was filled in, because `sum_buckets` did not return a
+  `classified` figure. It now reports 14 of 15 counted people for today.
+
+Both were found by reading an actual exported workbook against the camera's
+own statistics, not by a failing test.
+
+### Verification
+
+Every figure traced from the camera's XML through the parser, the evaluator,
+the exporter and the live sensors, all at the same moment: entries 73,
+exits 75, duplicate people 58, unique people 15, classified 14, validity
+valid across 24/24 buckets. The hourly rows and the camera's own day-level row
+agree exactly, which also confirms that summing hourly buckets is correct -
+the camera's 24-hour deduplication window means an hourly row already carries
+day-scope duplicates.
+
 ## 0.3.1 - 2026-11-19
 
 ### Fixed

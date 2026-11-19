@@ -130,6 +130,10 @@ def sum_buckets(buckets: list[CountingBucket]) -> dict[str, Any]:
         "unique_people": unique,
         "validity": overall,
         "demographics": demographics,
+        # How many of the counted people carry a classification. Reports print
+        # this beside `unique_people`; without it the exported TOTAL row left
+        # the column blank while the per-hour rows were filled in.
+        "classified": classified_total(demographics),
         "bucket_counts": counts,
     }
 

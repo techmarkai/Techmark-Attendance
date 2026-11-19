@@ -7,6 +7,8 @@ missing from it. So "is this read complete?" has to fail closed.
 
 from __future__ import annotations
 
+from datetime import date
+
 import httpx
 import pytest
 
@@ -200,3 +202,38 @@ async def test_only_read_only_methods_reach_the_camera():
         assert method in ("GET", "POST")
         if method == "POST":
             assert path.endswith(("FDSearch", "search")), f"non-search POST to {path}"
+
+
+@pytest.mark.asyncio
+async def test_counting_buckets_include_the_glasses_breakdown():
+    """The camera sends GlassList and it was being dropped.
+
+    Every other attribute list was parsed, so the report's Glass section could
+    never populate and the glass consistency check in evaluate_bucket never
+    ran against real data.
+    """
+    body = (
+        f'<?xml version="1.0" encoding="UTF-8"?>'
+        f'<CountingStatisticsResult version="2.0" xmlns="{NS}">'
+        "<matchElement>"
+        "<startTime>2026-11-19T09:00:00</startTime>"
+        "<enterCount>19</enterCount><exitCount>16</exitCount>"
+        "<duplicatePeopleCount>14</duplicatePeopleCount>"
+        "<GenderList><Gender><value>male</value><count>5</count></Gender></GenderList>"
+        "<MaskList><Mask><value>no</value><count>5</count></Mask></MaskList>"
+        "<GlassList>"
+        "<Glass><value>yes</value><count>1</count></Glass>"
+        "<Glass><value>sunglasses</value><count>0</count></Glass>"
+        "<Glass><value>no</value><count>4</count></Glass>"
+        "</GlassList>"
+        "</matchElement></CountingStatisticsResult>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body)
+
+    buckets = await client_for(handler).counting_statistics(date(2026, 11, 19))
+    assert buckets[0]["glass"] == {"yes": 1, "sunglasses": 0, "no": 4}
+    # The other categories must keep working.
+    assert buckets[0]["gender"] == {"male": 5}
+    assert buckets[0]["enter"] == 19
