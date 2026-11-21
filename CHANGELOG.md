@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.4.0 - 2026-11-21
+
+### Added
+
+- **`Camera face-verified people today` / `this month`** - counted people the
+  camera actually captured a classifiable face for.
+
+  Why it exists: deduplication works by comparing faces, so a crossing the
+  camera could not attach a face to can never be matched against an earlier
+  sighting and is counted as a new person on every pass. `unique_people` is
+  therefore an UPPER bound. Observed on the live camera at 10:00 on
+  2026-11-21: 37 crossings, 35 deduplicated, and both remaining "new people"
+  had no face classification at all. Across that day, 3 of 13 "new people" had
+  no face; on 2026-11-19 it was 18 of 55.
+
+  The face-verified figure is the LOWER bound: it cannot contain a duplicate,
+  because a demographic category is attributed once per deduplicated person,
+  but it excludes anyone whose face was captured and not classified. The true
+  number of distinct people lies between the two. Neither figure can exclude
+  employees.
+
+- `unique_people` now carries `face_verified` and `without_face` attributes, so
+  the gap is visible on the sensor that reads high rather than needing a second
+  entity to notice it.
+
+### Fixed in the tests
+
+- Runtime tests shared one database file for the whole session, because the
+  Home Assistant test harness reuses a config directory and the store filename
+  is fixed. Counting buckets written by one test were still present for the
+  next, and two tests read another test's totals. Every runtime test now
+  starts from an empty database.
+
+### Camera settings, for the record
+
+`dynamicCycleRemoveDuplicate.sensitivityLevel` was lowered 88 -> 78 on
+2026-11-19, which raised the deduplication rate from 84.2% (2026-11-19) to
+89.3% (2026-11-21). Raising `InterPupileRegion.width` from 10 to 40 was tried
+the same day and **reverted**: it stopped people counting altogether, because
+almost every face at this entrance is small. No other camera setting has been
+changed.
+
 ## 0.3.2 - 2026-11-19
 
 ### Fixed

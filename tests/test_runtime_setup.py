@@ -36,11 +36,29 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.techmark_attendance.const import (
+    DB_FILENAME,
     DOMAIN,
     ROSTER_COMPLETE,
     ROSTER_INCOMPLETE,
 )
 from custom_components.techmark_attendance.models import FaceMatch
+
+
+@pytest.fixture(autouse=True)
+def _clean_store(hass):
+    """Give every test an empty database.
+
+    The Home Assistant test harness reuses one config directory for the
+    session, and the store filename is fixed, so counting buckets written by
+    one test would otherwise still be there for the next one. That made two
+    tests read another test's totals.
+    """
+    from pathlib import Path as _Path
+
+    for suffix in ("", "-wal", "-shm"):
+        _Path(hass.config.path(DB_FILENAME + suffix)).unlink(missing_ok=True)
+    return None
+
 
 ENTRY_DATA = {
     CONF_HOST: "camera.invalid",
@@ -330,3 +348,105 @@ async def test_a_recognition_reaches_that_employees_sensor(
     assert aggregate.state == "1"
     # The two must agree; disagreement is the signature of the bug.
     assert "Yousef" in aggregate.attributes["names"]
+
+
+# --- faceless crossings inflate the unique count -------------------------
+
+
+def _bucket(hour: int, enter: int, dedup: int, classified: int) -> dict:
+    """A counting bucket: `enter - dedup` people counted, `classified` with a face.
+
+    Mirrors the live payload. Exits are irrelevant to the unique figure, so
+    they just track entries here.
+    """
+    return {
+        "hour": hour,
+        "start": f"2026-11-21T{hour:02d}:00:00",
+        "enter": enter,
+        "exit": enter,
+        "dedup": dedup,
+        "gender": {"male": classified},
+        "age": {"middle": classified},
+        "mask": {"no": classified},
+        "glass": {"no": classified},
+    }
+
+
+async def test_face_verified_count_excludes_crossings_with_no_face(
+    hass: HomeAssistant,
+) -> None:
+    """The over-count the owner reported, reproduced from real camera figures.
+
+    2026-11-21 10:00 on the live camera: 37 crossings, 35 deduplicated, so two
+    "new people" - and neither had any face classification. Deduplication
+    compares faces, so a crossing with no usable face can never be matched
+    against an earlier sighting and counts as new on every pass.
+
+    `unique_people` is therefore an upper bound. The face-verified figure is
+    the lower bound, and the gap is reported rather than hidden.
+    """
+    client = FakeClient(buckets=[_bucket(10, 37, 35, 0)])
+    await setup_integration(hass, client)
+
+    unique = next(
+        s for s in hass.states.async_all() if s.entity_id.endswith("unique_people_today")
+    )
+    verified = next(
+        s
+        for s in hass.states.async_all()
+        if s.entity_id.endswith("face_verified_people_today")
+    )
+
+    assert unique.state == "2", "the raw figure still counts the faceless crossings"
+    assert verified.state == "0", "neither had a face, so neither is verified"
+    assert unique.attributes["without_face"] == 2
+    assert unique.attributes["face_verified"] == 0
+    assert verified.attributes["unique_people_upper_bound"] == 2
+
+
+async def test_the_two_figures_agree_when_every_face_was_captured(
+    hass: HomeAssistant,
+) -> None:
+    """No gap means no faceless crossings, so the count is unambiguous."""
+    client = FakeClient(buckets=[_bucket(11, 53, 49, 4)])
+    await setup_integration(hass, client)
+
+    unique = next(
+        s for s in hass.states.async_all() if s.entity_id.endswith("unique_people_today")
+    )
+    verified = next(
+        s
+        for s in hass.states.async_all()
+        if s.entity_id.endswith("face_verified_people_today")
+    )
+    assert unique.state == verified.state == "4"
+    assert unique.attributes["without_face"] == 0
+
+
+async def test_face_verified_never_exceeds_the_deduplicated_count(
+    hass: HomeAssistant,
+) -> None:
+    """It is a subset, so it can never be the larger number."""
+    client = FakeClient(
+        buckets=[
+            _bucket(9, 13, 9, 4),
+            _bucket(10, 37, 35, 0),
+            _bucket(11, 53, 49, 4),
+            _bucket(12, 18, 15, 2),
+        ]
+    )
+    await setup_integration(hass, client)
+
+    unique = next(
+        s for s in hass.states.async_all() if s.entity_id.endswith("unique_people_today")
+    )
+    verified = next(
+        s
+        for s in hass.states.async_all()
+        if s.entity_id.endswith("face_verified_people_today")
+    )
+    # The real figures for 2026-11-21: 13 counted, 10 with a face, 3 without.
+    assert unique.state == "13"
+    assert verified.state == "10"
+    assert int(verified.state) <= int(unique.state)
+    assert unique.attributes["without_face"] == 3

@@ -50,6 +50,18 @@ async def async_setup_entry(
         ),
         UniquePeopleSensor(coordinator, "camera_unique_people_today", "Camera unique people today", "today"),
         UniquePeopleSensor(coordinator, "camera_unique_people_month", "Camera unique people this month", "month"),
+        FaceVerifiedPeopleSensor(
+            coordinator,
+            "camera_face_verified_people_today",
+            "Camera face-verified people today",
+            "today",
+        ),
+        FaceVerifiedPeopleSensor(
+            coordinator,
+            "camera_face_verified_people_month",
+            "Camera face-verified people this month",
+            "month",
+        ),
         GenderSensor(coordinator, "camera_demographics_male_today", "Camera demographics male today", "male"),
         GenderSensor(coordinator, "camera_demographics_female_today", "Camera demographics female today", "female"),
         GenderSensor(
@@ -202,9 +214,70 @@ class UniquePeopleSensor(_CameraSensor):
                 "enter": totals.get("enter"),
                 "duplicate_people": totals.get("duplicate_people"),
                 "includes_employees": "unknown_not_separable",
+                # Deduplication needs a face to compare. A crossing the camera
+                # could not attach a face to can never be matched against an
+                # earlier sighting, so it counts as a new person every time.
+                # Those crossings are the gap between this figure and the
+                # face-verified one, and they are why this reads high.
+                "face_verified": totals.get("classified"),
+                "without_face": _without_face(totals),
                 "note": (
-                    "Deduplicated people the camera counted. The camera "
-                    "provides no way to exclude employees from this figure."
+                    "Deduplicated people the camera counted. This is the UPPER "
+                    "bound: it includes crossings with no usable face, which "
+                    "cannot be deduplicated and so count as new every time. "
+                    "See face_verified for the lower bound. The camera "
+                    "provides no way to exclude employees from either figure."
+                ),
+            }
+        )
+        return attrs
+
+
+def _without_face(totals: dict[str, Any]) -> int | None:
+    """Counted people the camera captured no classifiable face for."""
+    unique = totals.get("unique_people")
+    classified = totals.get("classified")
+    if unique is None or classified is None:
+        return None
+    return max(0, unique - classified)
+
+
+class FaceVerifiedPeopleSensor(_CameraSensor):
+    """Counted people the camera actually captured a face for.
+
+    The LOWER bound on distinct people. `unique_people` is the upper bound: it
+    also counts crossings with no usable face, and because deduplication works
+    by comparing faces, such a crossing is counted as a new person on every
+    pass. Observed 2026-11-21 10:00: 37 crossings, 35 deduplicated, and both
+    remaining "new people" had no face at all.
+
+    This figure cannot include a duplicate, because a demographic category is
+    attributed once per deduplicated person. It can still UNDER-count: someone
+    whose face was captured but not classified is left out. The true number of
+    distinct people lies between the two, and neither can exclude employees.
+    """
+
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "people"
+
+    @property
+    def native_value(self) -> int | None:
+        return _totals(self.coordinator, self._period).get("classified")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs = super().extra_state_attributes
+        totals = _totals(self.coordinator, self._period)
+        attrs.update(
+            {
+                "unique_people_upper_bound": totals.get("unique_people"),
+                "without_face": _without_face(totals),
+                "includes_employees": "unknown_not_separable",
+                "note": (
+                    "People the camera captured a classifiable face for, "
+                    "counted once each. Lower bound on distinct people: a face "
+                    "captured but not classified is excluded. Contains no "
+                    "duplicates by construction."
                 ),
             }
         )
